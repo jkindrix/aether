@@ -21,10 +21,7 @@ effect Emit<T> {
     op emit(value: T) -> ();
 }
 
-enum Option<T> {
-    Some(T),
-    None,
-}
+// Note: Option<T> is a built-in type in Blood
 
 // -----------------------------------------------------------------------------
 // Ring Buffer for Element History
@@ -121,6 +118,12 @@ fn ring_is_empty(buf: RingBuffer) -> bool {
 // Window Result Types
 // -----------------------------------------------------------------------------
 
+/// Timestamped value for session windowing.
+struct TimestampedValue {
+    timestamp: i64,
+    value: i32,
+}
+
 /// Result of windowed aggregation.
 struct WindowResult {
     /// Window sequence number.
@@ -191,7 +194,8 @@ fn tumbling_window(
     let mut buf: RingBuffer = new_ring_buffer(window_size);
     let mut window_id: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             buf = ring_push(buf, value);
 
@@ -229,7 +233,8 @@ fn sliding_window(
     let mut since_last_emit: i32 = 0;
     let mut total_elements: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             buf = ring_push(buf, value);
             total_elements = total_elements + 1;
@@ -287,45 +292,19 @@ struct SessionState {
     window_id: i64,
 }
 
-/// Session window with timestamp-based gap detection.
-/// Elements with timestamp gap > session_gap start a new window.
-fn session_window(
-    stream: fn() / {Emit<(i64, i32)>},  // (timestamp, value) pairs
-    session_gap: i64
-) / {Emit<WindowResult>} {
-    let mut buf: RingBuffer = new_ring_buffer(64);
-    let mut last_ts: i64 = 0;
-    let mut window_id: i64 = 0;
-    let mut first: bool = true;
-
-    handle stream() {
-        Emit.emit(pair) => {
-            let ts: i64 = pair.0;
-            let value: i32 = pair.1;
-
-            // Check for session boundary
-            if !first && (ts - last_ts) > session_gap {
-                // Gap detected: emit current session, start new
-                if buf.count > 0 {
-                    perform Emit.emit(compute_window_result(buf, window_id));
-                    window_id = window_id + 1;
-                    buf = new_ring_buffer(64);
-                }
-            }
-
-            buf = ring_push(buf, value);
-            last_ts = ts;
-            first = false;
-
-            resume(());
-        }
-    };
-
-    // Emit final session
-    if buf.count > 0 {
-        perform Emit.emit(compute_window_result(buf, window_id));
-    }
-}
+// NOTE: session_window is commented out due to Blood compiler limitation
+// with type inference for struct types in effect handler patterns.
+// The compiler cannot infer the type of handler-bound variables for
+// complex types like structs or tuples.
+//
+// /// Session window with timestamp-based gap detection.
+// /// Elements with timestamp gap > session_gap start a new window.
+// fn session_window(
+//     stream: fn() / {Emit<TimestampedValue>},
+//     session_gap: i64
+// ) / {Emit<WindowResult>} {
+//     ...
+// }
 
 // -----------------------------------------------------------------------------
 // Count-Based Sliding Window
@@ -342,7 +321,8 @@ fn count_sliding_window(
     let mut count: i32 = 0;
     let mut window_id: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             buf = ring_push(buf, value);
             count = count + 1;
@@ -374,7 +354,8 @@ fn moving_average(
 ) / {Emit<i64>} {
     let mut buf: RingBuffer = new_ring_buffer(window_size);
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             buf = ring_push(buf, value);
 
@@ -395,7 +376,8 @@ fn running_average(stream: fn() / {Emit<i32>}) / {Emit<i64>} {
     let mut sum: i64 = 0;
     let mut count: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             sum = sum + (value as i64);
             count = count + 1;
@@ -421,7 +403,8 @@ fn windowed_fold<R>(
     let mut since_emit: i32 = 0;
     let mut started: bool = false;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             buf = ring_push(buf, value);
             since_emit = since_emit + 1;
@@ -465,7 +448,8 @@ fn with_window_markers(
     let mut count: i32 = 0;
     let mut window_id: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             let pos: i32 = count % window_size;
             let marker: WindowMarker = WindowMarker {
@@ -501,9 +485,10 @@ fn exponential_moving_average(
     let mut ema: i64 = 0;
     let mut first: bool = true;
     let alpha: i64 = alpha_percent as i64;
-    let one_minus_alpha: i64 = 100 - alpha;
+    let one_minus_alpha: i64 = 100i64 - alpha;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if first {
                 ema = (value as i64) * 100;  // Scale for precision
@@ -537,7 +522,8 @@ fn detect_gaps(
     let mut prev: i64 = 0;
     let mut first: bool = true;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if !first {
                 let expected: i64 = prev + expected_step;

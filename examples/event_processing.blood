@@ -10,6 +10,10 @@
 //
 // Use case: Financial trading system monitoring
 //
+// Rewritten using Blood's actual syntax:
+// - try { } with { } for inline handlers
+// - Emit.emit(value) for handler patterns
+//
 
 // -----------------------------------------------------------------------------
 // Core Effects
@@ -31,11 +35,6 @@ effect Alert {
 effect Time {
     op now() -> i64;
     op elapsed_since(start: i64) -> i64;
-}
-
-enum Option<T> {
-    Some(T),
-    None,
 }
 
 // -----------------------------------------------------------------------------
@@ -150,7 +149,8 @@ fn market_event_source(
 fn trades_only(
     stream: fn() / {Emit<MarketEvent>}
 ) / {Emit<MarketEvent>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(event) => {
             match event.event_type {
                 EventType::Trade => {
@@ -168,7 +168,8 @@ fn filter_symbol(
     stream: fn() / {Emit<MarketEvent>},
     symbol_id: i32
 ) / {Emit<MarketEvent>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(event) => {
             if event.symbol_id == symbol_id {
                 perform Emit.emit(event);
@@ -183,7 +184,8 @@ fn filter_large_orders(
     stream: fn() / {Emit<MarketEvent>},
     threshold: i32
 ) / {Emit<MarketEvent>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(event) => {
             if event.quantity > threshold {
                 perform Emit.emit(event);
@@ -210,7 +212,8 @@ fn compute_metrics(
     let mut price_sums: [i64; 8] = [0; 8];
     let mut prev_prices: [i64; 8] = [0; 8];
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(event) => {
             let idx: i32 = event.symbol_id;
             if idx >= 0 && idx < 8 {
@@ -275,7 +278,8 @@ fn compute_metrics(
 fn detect_price_spikes(
     stream: fn() / {Emit<SymbolMetrics>}
 ) / {Emit<AlertInfo>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(metrics) => {
             if metrics.avg_price > 0 {
                 let deviation: i64 = if metrics.last_price > metrics.avg_price {
@@ -306,7 +310,8 @@ fn detect_price_spikes(
 fn detect_high_volatility(
     stream: fn() / {Emit<SymbolMetrics>}
 ) / {Emit<AlertInfo>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(metrics) => {
             if metrics.volatility > 20 {
                 let level: i32 = if metrics.volatility > 50 { 3 } else { 2 };
@@ -328,7 +333,8 @@ fn detect_volume_anomaly(
     stream: fn() / {Emit<SymbolMetrics>},
     baseline_volume: i64
 ) / {Emit<AlertInfo>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(metrics) => {
             if metrics.volume > baseline_volume * 5 {
                 perform Emit.emit(AlertInfo {
@@ -368,7 +374,8 @@ fn with_circuit_breaker(
     stream: fn() / {Emit<MarketEvent>},
     threshold: i32
 ) / {Emit<MarketEvent>, State<CircuitBreaker>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(event) => {
             let mut breaker: CircuitBreaker = perform State.get();
 
@@ -443,7 +450,8 @@ fn windowed_aggregate(
     };
     let mut initialized: bool = false;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(event) => {
             if !initialized {
                 current_window.start_time = event.timestamp;
@@ -506,7 +514,8 @@ fn summarize_alerts(
 
     let mut seen_symbols: [bool; 8] = [false; 8];
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(alert) => {
             match alert.level {
                 1 => { summary.info_count = summary.info_count + 1; },
@@ -542,10 +551,10 @@ fn run_cep_pipeline() -> AlertSummary {
     //   -> detect_price_spikes
     //   -> summarize_alerts
 
-    summarize_alerts(|| {
-        detect_price_spikes(|| {
-            compute_metrics(|| {
-                trades_only(|| {
+    summarize_alerts(|| / {Emit<AlertInfo>} {
+        detect_price_spikes(|| / {Emit<SymbolMetrics>} {
+            compute_metrics(|| / {Emit<MarketEvent>} {
+                trades_only(|| / {Emit<MarketEvent>} {
                     market_event_source(4, 200);
                 });
             });
@@ -558,27 +567,8 @@ fn run_cep_pipeline() -> AlertSummary {
 // -----------------------------------------------------------------------------
 
 fn main() {
-    println_str("=== Financial Event Processing Demo ===");
-    println_str("");
-
     let summary: AlertSummary = run_cep_pipeline();
 
-    println_str("Alert Summary:");
-    println_str("  Info alerts:");
-    println_int(summary.info_count);
-    println_str("  Warning alerts:");
-    println_int(summary.warning_count);
-    println_str("  Critical alerts:");
-    println_int(summary.critical_count);
-    println_str("  Symbols affected:");
-    println_int(summary.unique_symbols);
-
-    println_str("");
-    println_str("Processing complete!");
-}
-
-fn println_str(s: &str) {
-}
-
-fn println_int(n: i32) {
+    // Use results to avoid unused warnings
+    let _total: i32 = summary.info_count + summary.warning_count + summary.critical_count + summary.unique_symbols;
 }

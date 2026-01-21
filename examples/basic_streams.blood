@@ -5,19 +5,14 @@
 // Demonstrates fundamental stream creation, transformation, and consumption
 // using Blood's algebraic effects.
 //
-
-// Import core definitions (in practice, would use module system)
-// For now, these are defined inline for self-containment
+// Rewritten using Blood's actual syntax:
+// - try { } with { } for inline handlers
+// - Emit.emit(value) for handler patterns
+//
 
 /// Core emit effect
 effect Emit<T> {
     op emit(value: T) -> ();
-}
-
-/// Option type
-enum Option<T> {
-    Some(T),
-    None,
 }
 
 // -----------------------------------------------------------------------------
@@ -35,7 +30,8 @@ fn range(start: i32, end: i32) / {Emit<i32>} {
 
 /// Square each element
 fn square(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             perform Emit.emit(x * x);
             resume(());
@@ -45,7 +41,8 @@ fn square(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
 
 /// Keep only even numbers
 fn filter_even(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             if x % 2 == 0 {
                 perform Emit.emit(x);
@@ -58,7 +55,8 @@ fn filter_even(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
 /// Sum all elements (sink)
 fn sum(stream: fn() / {Emit<i32>}) -> i64 {
     let mut total: i64 = 0;
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             total = total + (x as i64);
             resume(());
@@ -72,9 +70,9 @@ fn example_sum_even_squares() -> i64 {
     // Pipeline: range(1, 11) -> filter_even -> square -> sum
     // Result: 4 + 16 + 36 + 64 + 100 = 220
 
-    sum(|| {
-        square(|| {
-            filter_even(|| {
+    sum(|| / {Emit<i32>} {
+        square(|| / {Emit<i32>} {
+            filter_even(|| / {Emit<i32>} {
                 range(1, 11);
             });
         });
@@ -88,7 +86,8 @@ fn example_sum_even_squares() -> i64 {
 /// Count elements in a stream
 fn count(stream: fn() / {Emit<i32>}) -> i64 {
     let mut n: i64 = 0;
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(_x) => {
             n = n + 1;
             resume(());
@@ -100,7 +99,8 @@ fn count(stream: fn() / {Emit<i32>}) -> i64 {
 /// Find maximum element
 fn maximum(stream: fn() / {Emit<i32>}) -> Option<i32> {
     let mut max: Option<i32> = Option::None;
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             match max {
                 Option::None => {
@@ -140,7 +140,8 @@ fn is_prime(n: i32) -> bool {
 }
 
 fn filter_primes(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             if is_prime(x) {
                 perform Emit.emit(x);
@@ -155,8 +156,8 @@ fn example_count_primes() -> i64 {
     // Primes: 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97
     // = 25 primes
 
-    count(|| {
-        filter_primes(|| {
+    count(|| / {Emit<i32>} {
+        filter_primes(|| / {Emit<i32>} {
             range(1, 101);
         });
     })
@@ -168,7 +169,8 @@ fn example_count_primes() -> i64 {
 
 /// Add a constant to each element
 fn add_const(stream: fn() / {Emit<i32>}, c: i32) / {Emit<i32>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             perform Emit.emit(x + c);
             resume(());
@@ -178,7 +180,8 @@ fn add_const(stream: fn() / {Emit<i32>}, c: i32) / {Emit<i32>} {
 
 /// Multiply each element
 fn multiply(stream: fn() / {Emit<i32>}, factor: i32) / {Emit<i32>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             perform Emit.emit(x * factor);
             resume(());
@@ -189,7 +192,8 @@ fn multiply(stream: fn() / {Emit<i32>}, factor: i32) / {Emit<i32>} {
 /// Take first n elements
 fn take(stream: fn() / {Emit<i32>}, n: i64) / {Emit<i32>} {
     let mut count: i64 = 0;
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             if count < n {
                 perform Emit.emit(x);
@@ -202,9 +206,10 @@ fn take(stream: fn() / {Emit<i32>}, n: i64) / {Emit<i32>} {
 }
 
 /// Drop first n elements
-fn drop(stream: fn() / {Emit<i32>}, n: i64) / {Emit<i32>} {
+fn drop_n(stream: fn() / {Emit<i32>}, n: i64) / {Emit<i32>} {
     let mut count: i64 = 0;
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             if count >= n {
                 perform Emit.emit(x);
@@ -217,17 +222,17 @@ fn drop(stream: fn() / {Emit<i32>}, n: i64) / {Emit<i32>} {
 
 /// Example 3: Complex pipeline
 fn example_complex_pipeline() -> i64 {
-    // range(1, 20) -> drop(5) -> take(10) -> multiply(2) -> add_const(1) -> sum
+    // range(1, 20) -> drop_n(5) -> take(10) -> multiply(2) -> add_const(1) -> sum
     // Elements: 6,7,8,9,10,11,12,13,14,15
     // After multiply(2): 12,14,16,18,20,22,24,26,28,30
     // After add_const(1): 13,15,17,19,21,23,25,27,29,31
     // Sum: 220
 
-    sum(|| {
-        add_const(|| {
-            multiply(|| {
-                take(|| {
-                    drop(|| {
+    sum(|| / {Emit<i32>} {
+        add_const(|| / {Emit<i32>} {
+            multiply(|| / {Emit<i32>} {
+                take(|| / {Emit<i32>} {
+                    drop_n(|| / {Emit<i32>} {
                         range(1, 20);
                     }, 5);
                 }, 10);
@@ -243,7 +248,8 @@ fn example_complex_pipeline() -> i64 {
 /// Running sum - emit cumulative sums
 fn running_sum(stream: fn() / {Emit<i32>}) / {Emit<i64>} {
     let mut total: i64 = 0;
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             total = total + (x as i64);
             perform Emit.emit(total);
@@ -255,7 +261,8 @@ fn running_sum(stream: fn() / {Emit<i32>}) / {Emit<i64>} {
 /// Collect last emitted value
 fn last(stream: fn() / {Emit<i64>}) -> Option<i64> {
     let mut result: Option<i64> = Option::None;
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             result = Option::Some(x);
             resume(());
@@ -270,8 +277,8 @@ fn example_running_sum() -> i64 {
     // running_sum produces: 1, 3, 6, 10, 15
     // last returns: 15
 
-    match last(|| {
-        running_sum(|| {
+    match last(|| / {Emit<i64>} {
+        running_sum(|| / {Emit<i32>} {
             range(1, 6);
         });
     }) {
@@ -294,7 +301,8 @@ fn sum_and_count(stream: fn() / {Emit<i32>}) -> SumAndCount {
     let mut total: i64 = 0;
     let mut n: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(x) => {
             total = total + (x as i64);
             n = n + 1;
@@ -307,7 +315,7 @@ fn sum_and_count(stream: fn() / {Emit<i32>}) -> SumAndCount {
 
 fn example_sum_and_count() -> i64 {
     // Compute average of 1..11 (should be 5)
-    let result: SumAndCount = sum_and_count(|| {
+    let result: SumAndCount = sum_and_count(|| / {Emit<i32>} {
         range(1, 11);
     });
 
@@ -326,41 +334,24 @@ fn example_sum_and_count() -> i64 {
 fn main() {
     // Example 1: Sum of squares of even numbers
     let result1: i64 = example_sum_even_squares();
-    println_str("Example 1 - Sum of even squares (1-10):");
-    println_int(result1 as i32);  // Expected: 220
+    // Expected: 220
 
     // Example 2: Count primes
     let result2: i64 = example_count_primes();
-    println_str("Example 2 - Count of primes (1-100):");
-    println_int(result2 as i32);  // Expected: 25
+    // Expected: 25
 
     // Example 3: Complex pipeline
     let result3: i64 = example_complex_pipeline();
-    println_str("Example 3 - Complex pipeline result:");
-    println_int(result3 as i32);  // Expected: 220
+    // Expected: 220
 
     // Example 4: Running sum
     let result4: i64 = example_running_sum();
-    println_str("Example 4 - Running sum final value:");
-    println_int(result4 as i32);  // Expected: 15
+    // Expected: 15
 
     // Example 5: Average calculation
     let result5: i64 = example_sum_and_count();
-    println_str("Example 5 - Average of 1-10:");
-    println_int(result5 as i32);  // Expected: 5
+    // Expected: 5
 
-    println_str("All examples completed!");
-}
-
-// Placeholder print functions (would use Blood's IO effects)
-fn println_str(s: &str) / {IO} {
-    // Uses Blood's IO effect for console output
-}
-
-fn println_int(n: i32) / {IO} {
-    // Uses Blood's IO effect for console output
-}
-
-effect IO {
-    op print(msg: i32) -> ();
+    // Use results to avoid unused warnings
+    let _total: i64 = result1 + result2 + result3 + result4 + result5;
 }

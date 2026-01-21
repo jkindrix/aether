@@ -298,33 +298,36 @@ fn ring_send<T>(ring: RingChannel<T>, value: T) / {RawChannel<T>} {
 /// Connect a source stream to a channel, enabling async consumption.
 fn stream_to_channel<T>(
     stream: fn() / {Emit<T>},
-    handle: ChannelHandle<T>
+    chan_handle: ChannelHandle<T>
 ) / {Emit<T>, RawChannel<T>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
-            channel_send(handle, value);
+            channel_send(chan_handle, value);
             resume(());
         }
     };
-    channel_close(handle);
+    channel_close(chan_handle);
 }
 
-/// Create a stream from a channel.
-fn channel_to_stream<T>(handle: ChannelHandle<T>) / {Emit<T>, RawChannel<T>} {
-    loop {
-        let maybe: Option<T> = channel_try_recv(handle);
-        match maybe {
-            Option::Some(value) => {
-                perform Emit.emit(value);
-            },
-            Option::None => {
-                // Check if channel is closed
-                // For now, break on empty
-                break;
-            },
-        }
-    }
-}
+// NOTE: channel_to_stream is commented out due to Blood compiler limitation
+// with type inference for generic types through Option pattern matching.
+// The type T in Option::Some(value) doesn't properly unify with Emit<T>.
+//
+// /// Create a stream from a channel.
+// fn channel_to_stream<T>(handle: ChannelHandle<T>) / {Emit<T>, RawChannel<T>} {
+//     loop {
+//         let maybe: Option<T> = channel_try_recv(handle);
+//         match maybe {
+//             Option::Some(value) => {
+//                 perform Emit.emit(value);
+//             },
+//             Option::None => {
+//                 break;
+//             },
+//         }
+//     }
+// }
 
 // -----------------------------------------------------------------------------
 // Effect Type Alias
@@ -342,13 +345,8 @@ fn channel_to_stream<T>(handle: ChannelHandle<T>) / {Emit<T>, RawChannel<T>} {
 //   fn consumer() / {TypedChannel<SensorReading>} { ... }
 
 // -----------------------------------------------------------------------------
-// Option Type (for completeness)
+// Required Effect Declarations
 // -----------------------------------------------------------------------------
-
-enum Option<T> {
-    Some(T),
-    None,
-}
 
 effect Emit<T> {
     op emit(value: T) -> ();

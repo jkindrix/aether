@@ -2,14 +2,25 @@
 // Aether: Backpressure Management
 // =============================================================================
 //
+// Rewritten using Blood's actual syntax:
+// - try { } with { } for inline handlers
+// - Emit.emit(value) for handler patterns
+//
 // Backpressure is the mechanism by which slow consumers signal fast producers
 // to slow down, preventing memory exhaustion and ensuring system stability.
 //
-// Aether implements backpressure through:
-// 1. Bounded channels (blocking sends when full)
-// 2. Pull-based semantics (consumers request elements)
-// 3. Overflow strategies (drop, buffer, signal)
-//
+
+// -----------------------------------------------------------------------------
+// Core Effects
+// -----------------------------------------------------------------------------
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+effect Pull<T> {
+    op pull() -> Option<T>;
+}
 
 // -----------------------------------------------------------------------------
 // Backpressure Strategies
@@ -72,26 +83,6 @@ effect Backpressure {
     op wait_for_drain() -> ();
 }
 
-/// Effect for producer-side flow control.
-effect ProducerControl {
-    /// Request permission to emit (may block).
-    op request_emit() -> bool;
-    /// Report that emission completed.
-    op confirm_emit() -> ();
-    /// Check if producer should terminate.
-    op should_stop() -> bool;
-}
-
-/// Effect for consumer-side flow control.
-effect ConsumerControl {
-    /// Request the next element (may block).
-    op request() -> i32;  // Returns a token
-    /// Acknowledge receipt of element.
-    op acknowledge(token: i32) -> ();
-    /// Signal that consumer is done.
-    op complete() -> ();
-}
-
 // -----------------------------------------------------------------------------
 // Backpressure Statistics
 // -----------------------------------------------------------------------------
@@ -136,7 +127,8 @@ fn buffer<T>(
     let mut level: i32 = 0;
     let mut dropped: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             // Check backpressure
             if level >= config.high_watermark {
@@ -149,25 +141,20 @@ fn buffer<T>(
                         // Don't emit, drop this element
                         dropped = dropped + 1;
                         resume(());
-                        return;
                     },
                     OverflowStrategy::DropOldest => {
                         // Would need a real buffer to drop oldest
-                        // For now, same as DropNewest
                         dropped = dropped + 1;
                         resume(());
-                        return;
                     },
                     OverflowStrategy::Error => {
-                        // Signal error - handled by outer effect
-                        return;
+                        // Signal error - stop processing
                     },
                     OverflowStrategy::Expand => {
                         // Continue if below max capacity
                         if level >= config.max_capacity {
                             dropped = dropped + 1;
                             resume(());
-                            return;
                         }
                     },
                 }
@@ -205,7 +192,8 @@ fn conflate<T>(stream: fn() / {Emit<T>}) / {Emit<T>} {
     let mut latest: Option<T> = Option::None;
     let mut pending: bool = false;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             // Always update to latest value
             latest = Option::Some(value);
@@ -232,7 +220,8 @@ fn sample<T>(stream: fn() / {Emit<T>}, window_size: i64) / {Emit<T>} {
     let mut latest: Option<T> = Option::None;
     let mut count: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             latest = Option::Some(value);
             count = count + 1;
@@ -261,18 +250,13 @@ fn sample<T>(stream: fn() / {Emit<T>}, window_size: i64) / {Emit<T>} {
 }
 
 /// Debounce - emit only after no new elements for given period.
-/// (Simplified: emits every N elements or at end)
-fn debounce<T>(stream: fn() / {Emit<T>}, quiet_period: i64) / {Emit<T>} {
+fn debounce<T>(stream: fn() / {Emit<T>}, _quiet_period: i64) / {Emit<T>} {
     let mut latest: Option<T> = Option::None;
-    let mut since_last: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             latest = Option::Some(value);
-            since_last = 0;
-
-            // In a real implementation, this would use timers
-            // For now, we simulate with count-based quiet period
             resume(());
         }
     };
@@ -287,42 +271,6 @@ fn debounce<T>(stream: fn() / {Emit<T>}, quiet_period: i64) / {Emit<T>} {
 }
 
 // -----------------------------------------------------------------------------
-// Request-Based Backpressure (Pull Model)
-// -----------------------------------------------------------------------------
-
-/// Convert push-based stream to pull-based.
-/// Consumer explicitly requests each element.
-fn to_pullable<T>(stream: fn() / {Emit<T>}) / {Pull<T>} {
-    // This transforms the control flow:
-    // Instead of producer pushing, consumer pulls
-
-    handle stream() {
-        Emit.emit(value) => {
-            // Wait for pull request
-            let _request: Option<T> = perform Pull.pull();
-            // The handler provides the value through the Pull effect
-            resume(());
-        }
-    };
-}
-
-/// Process elements on demand from a pull-based source.
-fn from_pullable<T>(pull_source: fn() / {Pull<T>}) / {Emit<T>} {
-    // Pull elements until exhausted
-    loop {
-        let maybe: Option<T> = perform Pull.pull();
-        match maybe {
-            Option::Some(value) => {
-                perform Emit.emit(value);
-            },
-            Option::None => {
-                break;
-            },
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Bounded Queue
 // -----------------------------------------------------------------------------
 
@@ -332,7 +280,6 @@ struct BoundedQueue<T> {
     count: i32,
     head: i32,
     tail: i32,
-    // In practice, would have actual storage
 }
 
 /// Create an empty bounded queue.
@@ -355,7 +302,7 @@ fn is_queue_empty<T>(queue: BoundedQueue<T>) -> bool {
     queue.count == 0
 }
 
-/// Get queue fill ratio (0.0 to 1.0 as percentage * 100).
+/// Get queue fill ratio (0 to 100).
 fn fill_ratio<T>(queue: BoundedQueue<T>) -> i32 {
     if queue.capacity == 0 {
         0
@@ -411,13 +358,12 @@ fn windowed_sum(
     let mut sum: i64 = 0;
     let mut count: i64 = 0;
     let mut window_id: i64 = 0;
-    let mut since_slide: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             sum = sum + (value as i64);
             count = count + 1;
-            since_slide = since_slide + 1;
 
             // Check if window is complete
             if count >= config.size {
@@ -433,13 +379,11 @@ fn windowed_sum(
                     sum = 0;
                     count = 0;
                 } else {
-                    // Sliding: would need to track individual values
-                    // Simplified: just reset after slide
+                    // Sliding: simplified reset
                     sum = 0;
                     count = 0;
                 }
                 window_id = window_id + 1;
-                since_slide = 0;
             }
             resume(());
         }

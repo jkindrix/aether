@@ -2,9 +2,21 @@
 // Aether: Stream Operators
 // =============================================================================
 //
+// Rewritten using Blood's actual syntax:
+// - try { } with { } for inline handlers
+// - Emit.emit(value) for handler patterns
+//
 // Operators transform streams by intercepting Emit effects and re-emitting
 // transformed values. This creates composable, type-safe pipelines.
 //
+
+// -----------------------------------------------------------------------------
+// Core Effect (must be defined in each file or imported)
+// -----------------------------------------------------------------------------
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
 
 // -----------------------------------------------------------------------------
 // Mapping Operators
@@ -13,7 +25,8 @@
 /// Transform each element with a function.
 /// map(stream, f) emits f(x) for each x in stream.
 fn map<T, U>(stream: fn() / {Emit<T>}, transform: fn(T) -> U) / {Emit<U>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             let transformed: U = transform(value);
             perform Emit.emit(transformed);
@@ -26,7 +39,8 @@ fn map<T, U>(stream: fn() / {Emit<T>}, transform: fn(T) -> U) / {Emit<U>} {
 fn map_indexed<T, U>(stream: fn() / {Emit<T>}, transform: fn(T, i64) -> U) / {Emit<U>} {
     let mut index: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             let transformed: U = transform(value, index);
             perform Emit.emit(transformed);
@@ -38,7 +52,8 @@ fn map_indexed<T, U>(stream: fn() / {Emit<T>}, transform: fn(T, i64) -> U) / {Em
 
 /// Emit a constant value for each input element (ignoring input values).
 fn map_const<T, U>(stream: fn() / {Emit<T>}, constant: U) / {Emit<U>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(_value) => {
             perform Emit.emit(constant);
             resume(());
@@ -52,7 +67,8 @@ fn map_const<T, U>(stream: fn() / {Emit<T>}, constant: U) / {Emit<U>} {
 
 /// Keep only elements satisfying a predicate.
 fn filter<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) / {Emit<T>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if predicate(value) {
                 perform Emit.emit(value);
@@ -64,27 +80,11 @@ fn filter<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) / {Emit<T>} {
 
 /// Keep elements that do NOT satisfy the predicate.
 fn filter_not<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) / {Emit<T>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if !predicate(value) {
                 perform Emit.emit(value);
-            }
-            resume(());
-        }
-    };
-}
-
-/// Filter and transform in one pass (emit only when Some).
-fn filter_map<T, U>(stream: fn() / {Emit<T>}, f: fn(T) -> Option<U>) / {Emit<U>} {
-    handle stream() {
-        Emit.emit(value) => {
-            match f(value) {
-                Option::Some(transformed) => {
-                    perform Emit.emit(transformed);
-                },
-                Option::None => {
-                    // Skip this element
-                },
             }
             resume(());
         }
@@ -99,7 +99,8 @@ fn filter_map<T, U>(stream: fn() / {Emit<T>}, f: fn(T) -> Option<U>) / {Emit<U>}
 fn take<T>(stream: fn() / {Emit<T>}, n: i64) / {Emit<T>} {
     let mut count: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if count < n {
                 perform Emit.emit(value);
@@ -115,7 +116,8 @@ fn take<T>(stream: fn() / {Emit<T>}, n: i64) / {Emit<T>} {
 fn take_while<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) / {Emit<T>} {
     let mut taking: bool = true;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if taking && predicate(value) {
                 perform Emit.emit(value);
@@ -129,10 +131,11 @@ fn take_while<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) / {Emit<T>}
 }
 
 /// Skip the first n elements, emit the rest.
-fn drop<T>(stream: fn() / {Emit<T>}, n: i64) / {Emit<T>} {
+fn drop_n<T>(stream: fn() / {Emit<T>}, n: i64) / {Emit<T>} {
     let mut skipped: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if skipped >= n {
                 perform Emit.emit(value);
@@ -148,7 +151,8 @@ fn drop<T>(stream: fn() / {Emit<T>}, n: i64) / {Emit<T>} {
 fn drop_while<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) / {Emit<T>} {
     let mut dropping: bool = true;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if dropping {
                 if predicate(value) {
@@ -169,7 +173,8 @@ fn drop_while<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) / {Emit<T>}
 fn step_by<T>(stream: fn() / {Emit<T>}, step: i64) / {Emit<T>} {
     let mut count: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if count % step == 0 {
                 perform Emit.emit(value);
@@ -192,7 +197,8 @@ fn scan<T, R>(
 ) / {Emit<R>} {
     let mut acc: R = initial;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             acc = combine(acc, value);
             perform Emit.emit(acc);
@@ -205,7 +211,8 @@ fn scan<T, R>(
 fn running_sum(stream: fn() / {Emit<i32>}) / {Emit<i64>} {
     let mut sum: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             sum = sum + (value as i64);
             perform Emit.emit(sum);
@@ -219,7 +226,8 @@ fn running_average(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
     let mut sum: i64 = 0;
     let mut count: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             sum = sum + (value as i64);
             count = count + 1;
@@ -234,7 +242,8 @@ fn running_average(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
 fn running_max(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
     let mut max_val: i32 = -2147483648;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if value > max_val {
                 max_val = value;
@@ -249,7 +258,8 @@ fn running_max(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
 fn running_min(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
     let mut min_val: i32 = 2147483647;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if value < min_val {
                 min_val = value;
@@ -270,35 +280,13 @@ fn dedup(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
     let mut last: i32 = 0;
     let mut has_last: bool = false;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if !has_last || value != last {
                 perform Emit.emit(value);
                 last = value;
                 has_last = true;
-            }
-            resume(());
-        }
-    };
-}
-
-/// Remove consecutive duplicates based on a key function.
-fn dedup_by<T, K>(
-    stream: fn() / {Emit<T>},
-    key_fn: fn(T) -> K
-) / {Emit<T>} {
-    let mut last_key: Option<K> = Option::None;
-
-    handle stream() {
-        Emit.emit(value) => {
-            let key: K = key_fn(value);
-            let should_emit: bool = match last_key {
-                Option::None => true,
-                Option::Some(prev_key) => key != prev_key,
-            };
-            if should_emit {
-                perform Emit.emit(value);
-                last_key = Option::Some(key);
             }
             resume(());
         }
@@ -318,43 +306,11 @@ struct Indexed<T> {
 fn enumerate<T>(stream: fn() / {Emit<T>}) / {Emit<Indexed<T>>} {
     let mut index: i64 = 0;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             perform Emit.emit(Indexed { index: index, value: value });
             index = index + 1;
-            resume(());
-        }
-    };
-}
-
-// -----------------------------------------------------------------------------
-// Chunking Operators
-// -----------------------------------------------------------------------------
-
-/// Emit chunks of n elements each.
-/// Note: Last chunk may have fewer than n elements.
-/// For simplicity, this emits a "chunk marker" between chunks.
-struct ChunkMarker {
-    chunk_index: i64,
-    element_index: i64,
-    is_chunk_end: bool,
-}
-
-fn chunk_markers(stream: fn() / {Emit<i32>}, chunk_size: i64) / {Emit<ChunkMarker>} {
-    let mut chunk_idx: i64 = 0;
-    let mut elem_idx: i64 = 0;
-
-    handle stream() {
-        Emit.emit(_value) => {
-            perform Emit.emit(ChunkMarker {
-                chunk_index: chunk_idx,
-                element_index: elem_idx,
-                is_chunk_end: (elem_idx + 1) % chunk_size == 0,
-            });
-            elem_idx = elem_idx + 1;
-            if elem_idx % chunk_size == 0 {
-                chunk_idx = chunk_idx + 1;
-            }
             resume(());
         }
     };
@@ -370,7 +326,8 @@ fn flat_map<T, U>(
     stream: fn() / {Emit<T>},
     f: fn(T) / {Emit<U>}
 ) / {Emit<U>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             // For each input value, run f which may emit multiple U values
             // Those emissions propagate to our handler's context
@@ -387,18 +344,12 @@ fn flat_map<T, U>(
 /// Peek at each element without modifying the stream.
 /// Useful for debugging or side effects.
 fn inspect<T>(stream: fn() / {Emit<T>}, inspector: fn(T) -> ()) / {Emit<T>} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             inspector(value);
             perform Emit.emit(value);
             resume(());
         }
     };
-}
-
-/// Count elements as they pass through (for progress tracking).
-fn count_through<T>(stream: fn() / {Emit<T>}) -> (fn() / {Emit<T>}, fn() -> i64) {
-    // This would require mutable shared state - simplified version below
-    // Returns the stream unchanged
-    stream
 }

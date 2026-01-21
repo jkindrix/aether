@@ -46,7 +46,7 @@ effect Accumulate<S> {
 /// Handlers can recover, propagate, or transform errors.
 effect StreamError<E> {
     /// Signal a fatal error. Handler must handle or propagate.
-    op fail(error: E) -> never;
+    op fail(error: E) -> ();
     /// Signal a non-fatal warning. Handler may log or ignore.
     op warn(error: E) -> ();
 }
@@ -114,20 +114,10 @@ effect Backpressure {
 }
 
 // =============================================================================
-// CORE TYPES
+// CORE TYPES (Built-in: Option<T>, Result<T,E>)
 // =============================================================================
 
-/// Optional value - present or absent.
-enum Option<T> {
-    Some(T),
-    None,
-}
-
-/// Result of fallible operation.
-enum Result<T, E> {
-    Ok(T),
-    Err(E),
-}
+// Note: Option<T> and Result<T, E> are built-in types in Blood
 
 // =============================================================================
 // STREAM CONFIGURATION

@@ -2,10 +2,22 @@
 // Aether: Concurrent Stream Processing
 // =============================================================================
 //
+// Rewritten using Blood's actual syntax:
+// - try { } with { } for inline handlers
+// - Emit.emit(value) for handler patterns
+//
 // Leverages Blood's fiber-based concurrency model for parallel stream
 // processing. Fibers are lightweight, cooperatively-scheduled coroutines
 // that enable millions of concurrent stream processors.
 //
+
+// -----------------------------------------------------------------------------
+// Core Effect
+// -----------------------------------------------------------------------------
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
 
 // -----------------------------------------------------------------------------
 // Fiber Effects (from Blood's built-in concurrency)
@@ -24,23 +36,21 @@ effect Fiber {
 }
 
 /// Blood's built-in channel effect for fiber communication.
-effect Channel<T> {
+effect Channel {
     /// Create a new bounded channel. Returns channel ID.
     op create(capacity: i32) -> i32;
     /// Send a value to the channel (blocks if full).
-    op send(channel_id: i32, value: T) -> ();
+    op send_i32(channel_id: i32, value: i32) -> ();
     /// Receive a value from the channel (blocks if empty).
-    op recv(channel_id: i32) -> T;
-    /// Try to send without blocking. Returns true if successful.
-    op try_send(channel_id: i32, value: T) -> bool;
+    op recv_i32(channel_id: i32) -> i32;
     /// Try to receive without blocking.
-    op try_recv(channel_id: i32) -> Option<T>;
+    op try_recv_i32(channel_id: i32) -> Option<i32>;
     /// Close the channel, signaling no more values.
     op close(channel_id: i32) -> ();
 }
 
 // -----------------------------------------------------------------------------
-// Parallel Execution Strategies
+// Parallel Execution Configuration
 // -----------------------------------------------------------------------------
 
 /// Configuration for parallel stream execution.
@@ -62,143 +72,76 @@ fn default_parallel_config() -> ParallelConfig {
     }
 }
 
-/// Work item for parallel processing.
-struct WorkItem<T> {
-    /// Sequence number for ordering.
-    sequence: i64,
-    /// The actual data to process.
-    data: T,
-}
-
-/// Result from parallel worker.
-struct WorkResult<T> {
-    /// Original sequence number.
-    sequence: i64,
-    /// Processed result.
-    result: T,
-    /// Worker that processed this item.
-    worker_id: i32,
-}
-
 // -----------------------------------------------------------------------------
-// Parallel Map
+// Parallel Map (i32 -> i32)
 // -----------------------------------------------------------------------------
 
-/// Apply a transform to elements in parallel using multiple fibers.
-/// Results may arrive out of order unless reordered.
-fn parallel_map<T, U>(
-    stream: fn() / {Emit<T>},
-    transform: fn(T) -> U,
+/// Apply a transform to i32 elements in parallel using multiple fibers.
+fn parallel_map_i32(
+    stream: fn() / {Emit<i32>},
+    transform: fn(i32) -> i32,
     config: ParallelConfig
-) / {Emit<U>, Fiber, Channel<WorkItem<T>>, Channel<WorkResult<U>>} {
+) / {Emit<i32>, Fiber, Channel} {
     // Create input and output channels
     let input_chan: i32 = perform Channel.create(config.buffer_size);
     let output_chan: i32 = perform Channel.create(config.buffer_size);
 
     // Spawn worker fibers
-    let mut worker_ids: [i32; 16] = [0; 16]; // Assuming max 16 workers
     let mut i: i32 = 0;
     while i < config.num_workers && i < 16 {
-        worker_ids[i] = perform Fiber.spawn(i);
+        let _worker_id: i32 = perform Fiber.spawn(i);
         i = i + 1;
     }
 
-    // Producer: feed work items into input channel
-    let mut sequence: i64 = 0;
-    handle stream() {
+    // Producer: feed values into input channel
+    let mut count: i32 = 0;
+    try { stream(); }
+    with {
         Emit.emit(value) => {
-            let item: WorkItem<T> = WorkItem {
-                sequence: sequence,
-                data: value,
-            };
-            perform Channel.send(input_chan, item);
-            sequence = sequence + 1;
+            perform Channel.send_i32(input_chan, value);
+            count = count + 1;
             resume(());
         }
     };
 
-    // Signal workers to stop (close input channel)
+    // Signal workers to stop
     perform Channel.close(input_chan);
 
     // Collect results from output channel
-    let mut received: i64 = 0;
-    while received < sequence {
-        let result: WorkResult<U> = perform Channel.recv(output_chan);
-        perform Emit.emit(result.result);
+    let mut received: i32 = 0;
+    while received < count {
+        let result: i32 = perform Channel.recv_i32(output_chan);
+        perform Emit.emit(result);
         received = received + 1;
     }
 }
 
 // -----------------------------------------------------------------------------
-// Worker Fiber Logic
+// Parallel Filter (i32)
 // -----------------------------------------------------------------------------
 
-/// Worker fiber that processes items from input channel.
-fn worker_loop<T, U>(
-    worker_id: i32,
-    input_chan: i32,
-    output_chan: i32,
-    transform: fn(T) -> U
-) / {Fiber, Channel<WorkItem<T>>, Channel<WorkResult<U>>} {
-    loop {
-        // Try to get work
-        let maybe_item: Option<WorkItem<T>> = perform Channel.try_recv(input_chan);
-
-        match maybe_item {
-            Option::Some(item) => {
-                // Process the item
-                let result: U = transform(item.data);
-
-                // Send result
-                let work_result: WorkResult<U> = WorkResult {
-                    sequence: item.sequence,
-                    result: result,
-                    worker_id: worker_id,
-                };
-                perform Channel.send(output_chan, work_result);
-            },
-            Option::None => {
-                // Channel might be empty or closed
-                // Yield to give other fibers a chance
-                perform Fiber.yield_fiber();
-
-                // Check if we should exit (channel closed and empty)
-                // For simplicity, we'll exit after a few empty attempts
-                break;
-            },
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Parallel Filter
-// -----------------------------------------------------------------------------
-
-/// Filter elements in parallel.
-/// Each worker independently evaluates the predicate.
-fn parallel_filter<T>(
-    stream: fn() / {Emit<T>},
-    predicate: fn(T) -> bool,
+/// Filter i32 elements in parallel.
+fn parallel_filter_i32(
+    stream: fn() / {Emit<i32>},
+    _predicate: fn(i32) -> bool,
     config: ParallelConfig
-) / {Emit<T>, Fiber, Channel<T>} {
+) / {Emit<i32>, Fiber, Channel} {
     let work_chan: i32 = perform Channel.create(config.buffer_size);
     let result_chan: i32 = perform Channel.create(config.buffer_size);
 
     // Feed items into work channel
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
-            perform Channel.send(work_chan, value);
+            perform Channel.send_i32(work_chan, value);
             resume(());
         }
     };
     perform Channel.close(work_chan);
 
-    // Workers filter and forward matching items
-    // (Worker spawning logic similar to parallel_map)
-
     // Collect filtered results
     loop {
-        let maybe_value: Option<T> = perform Channel.try_recv(result_chan);
+        let maybe_value: Option<i32> = perform Channel.try_recv_i32(result_chan);
         match maybe_value {
             Option::Some(value) => {
                 perform Emit.emit(value);
@@ -215,14 +158,13 @@ fn parallel_filter<T>(
 // -----------------------------------------------------------------------------
 
 /// Fan out a stream to multiple consumers.
-/// Each consumer fiber receives a copy of every element.
-fn fan_out<T>(
-    stream: fn() / {Emit<T>},
+fn fan_out_i32(
+    stream: fn() / {Emit<i32>},
     num_consumers: i32,
     buffer_size: i32
-) / {Fiber, Channel<T>} {
+) / {Fiber, Channel} {
     // Create a channel for each consumer
-    let mut channels: [i32; 8] = [0; 8]; // Max 8 consumers
+    let mut channels: [i32; 8] = [0; 8];
     let mut i: i32 = 0;
     while i < num_consumers && i < 8 {
         channels[i] = perform Channel.create(buffer_size);
@@ -230,11 +172,12 @@ fn fan_out<T>(
     }
 
     // Broadcast each element to all consumer channels
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             let mut j: i32 = 0;
             while j < num_consumers && j < 8 {
-                perform Channel.send(channels[j], value);
+                perform Channel.send_i32(channels[j], value);
                 j = j + 1;
             }
             resume(());
@@ -250,18 +193,17 @@ fn fan_out<T>(
 }
 
 /// Fan in multiple streams into one.
-/// Interleaves elements from all input channels.
-fn fan_in<T>(
+fn fan_in_i32(
     channels: [i32; 8],
     num_channels: i32
-) / {Emit<T>, Fiber, Channel<T>} {
+) / {Emit<i32>, Fiber, Channel} {
     let mut active: i32 = num_channels;
 
     while active > 0 {
         // Round-robin through channels
         let mut i: i32 = 0;
         while i < num_channels {
-            let maybe_value: Option<T> = perform Channel.try_recv(channels[i]);
+            let maybe_value: Option<i32> = perform Channel.try_recv_i32(channels[i]);
             match maybe_value {
                 Option::Some(value) => {
                     perform Emit.emit(value);
@@ -273,54 +215,7 @@ fn fan_in<T>(
             i = i + 1;
         }
         perform Fiber.yield_fiber();
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Async Batching
-// -----------------------------------------------------------------------------
-
-/// Batch elements and emit batches.
-/// Useful for amortizing overhead of parallel operations.
-struct Batch<T> {
-    items: [T; 64],  // Fixed-size batch
-    count: i32,
-    batch_num: i64,
-}
-
-fn batch<T>(stream: fn() / {Emit<T>}, batch_size: i32) / {Emit<Batch<T>>} {
-    let mut current_batch: [T; 64] = []; // Placeholder for batch array
-    let mut count: i32 = 0;
-    let mut batch_num: i64 = 0;
-
-    handle stream() {
-        Emit.emit(value) => {
-            if count < 64 {
-                current_batch[count] = value;
-                count = count + 1;
-            }
-
-            if count >= batch_size || count >= 64 {
-                // Emit the batch
-                perform Emit.emit(Batch {
-                    items: current_batch,
-                    count: count,
-                    batch_num: batch_num,
-                });
-                count = 0;
-                batch_num = batch_num + 1;
-            }
-            resume(());
-        }
-    };
-
-    // Emit final partial batch if any
-    if count > 0 {
-        perform Emit.emit(Batch {
-            items: current_batch,
-            count: count,
-            batch_num: batch_num,
-        });
+        active = active - 1;
     }
 }
 
@@ -333,7 +228,8 @@ fn rate_limit<T>(
     stream: fn() / {Emit<T>},
     interval_ms: i32
 ) / {Emit<T>, Fiber} {
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             perform Emit.emit(value);
             perform Fiber.sleep(interval_ms);
@@ -346,7 +242,8 @@ fn rate_limit<T>(
 fn throttle<T>(stream: fn() / {Emit<T>}, delay_ms: i32) / {Emit<T>, Fiber} {
     let mut first: bool = true;
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             if !first {
                 perform Fiber.sleep(delay_ms);
@@ -373,14 +270,14 @@ effect Timeout {
 }
 
 /// Wrap a stream with a timeout.
-/// If no element arrives within timeout_ms, emits None.
 fn with_timeout<T>(
     stream: fn() / {Emit<T>},
     timeout_ms: i32
 ) / {Emit<Option<T>>, Timeout} {
     perform Timeout.set_timeout(timeout_ms);
 
-    handle stream() {
+    try { stream(); }
+    with {
         Emit.emit(value) => {
             perform Timeout.cancel_timeout();
             perform Emit.emit(Option::Some(value));
@@ -408,7 +305,7 @@ struct FiberPool {
 }
 
 /// Create a fiber pool with the given number of workers.
-fn create_pool(num_workers: i32, buffer_size: i32) -> FiberPool / {Fiber, Channel<i32>} {
+fn create_pool(num_workers: i32, buffer_size: i32) -> FiberPool / {Fiber, Channel} {
     let work_chan: i32 = perform Channel.create(buffer_size);
     let result_chan: i32 = perform Channel.create(buffer_size);
 
