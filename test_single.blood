@@ -1,0 +1,62 @@
+// Single comprehensive test
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+fn map<T, U>(stream: fn() / {Emit<T>}, f: fn(T) -> U) / {Emit<U>} {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            perform Emit.emit(f(value));
+            resume(());
+        }
+    };
+}
+
+fn filter<T>(stream: fn() / {Emit<T>}, pred: fn(T) -> bool) / {Emit<T>} {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            if pred(value) {
+                perform Emit.emit(value);
+            }
+            resume(());
+        }
+    };
+}
+
+fn sum(stream: fn() / {Emit<i32>}) -> i32 {
+    let mut total: i32 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+    total
+}
+
+fn square(x: i32) -> i32 { x * x }
+fn is_even(x: i32) -> bool { x % 2 == 0 }
+
+fn main() -> i32 {
+    // Full pipeline: sum of squares of evens from 1..11
+    // evens: 2, 4, 6, 8, 10
+    // squares: 4, 16, 36, 64, 100
+    // sum: 220
+    sum(|| / {Emit<i32>} {
+        map(|| / {Emit<i32>} {
+            filter(|| / {Emit<i32>} { range(1, 11); }, is_even);
+        }, square);
+    })
+}

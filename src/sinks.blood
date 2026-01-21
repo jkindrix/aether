@@ -1,0 +1,380 @@
+// =============================================================================
+// Aether: Stream Sinks
+// =============================================================================
+//
+// Sinks are terminal operations that consume streams and produce final results.
+// They act as handlers for the Emit<T> effect, collecting or reducing values.
+//
+
+// -----------------------------------------------------------------------------
+// Counting Sinks
+// -----------------------------------------------------------------------------
+
+/// Count the number of elements in a stream.
+/// Returns the total count after the stream is exhausted.
+fn count_sink<T>(stream: fn() / {Emit<T>}) -> i64 {
+    let mut count: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            count = count + 1;
+            resume(());
+        }
+    };
+
+    count
+}
+
+/// Count elements matching a predicate.
+fn count_if<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) -> i64 {
+    let mut count: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if predicate(value) {
+                count = count + 1;
+            }
+            resume(());
+        }
+    };
+
+    count
+}
+
+// -----------------------------------------------------------------------------
+// Reduction Sinks
+// -----------------------------------------------------------------------------
+
+/// Sum all integer elements in the stream.
+fn sum_i32(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut total: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            total = total + (value as i64);
+            resume(());
+        }
+    };
+
+    total
+}
+
+/// Sum all i64 elements in the stream.
+fn sum_i64(stream: fn() / {Emit<i64>}) -> i64 {
+    let mut total: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+
+    total
+}
+
+/// Compute the product of all elements.
+fn product_i32(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut product: i64 = 1;
+
+    handle stream() {
+        Emit.emit(value) => {
+            product = product * (value as i64);
+            resume(());
+        }
+    };
+
+    product
+}
+
+/// Find the maximum element (returns 0 if stream is empty).
+fn max_i32(stream: fn() / {Emit<i32>}) -> i32 {
+    let mut max_val: i32 = -2147483648; // i32::MIN
+    let mut found: bool = false;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if !found || value > max_val {
+                max_val = value;
+                found = true;
+            }
+            resume(());
+        }
+    };
+
+    if found {
+        max_val
+    } else {
+        0
+    }
+}
+
+/// Find the minimum element (returns 0 if stream is empty).
+fn min_i32(stream: fn() / {Emit<i32>}) -> i32 {
+    let mut min_val: i32 = 2147483647; // i32::MAX
+    let mut found: bool = false;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if !found || value < min_val {
+                min_val = value;
+                found = true;
+            }
+            resume(());
+        }
+    };
+
+    if found {
+        min_val
+    } else {
+        0
+    }
+}
+
+/// Compute average of elements (returns 0 if stream is empty).
+fn average_i32(stream: fn() / {Emit<i32>}) -> i32 {
+    let mut sum: i64 = 0;
+    let mut count: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            sum = sum + (value as i64);
+            count = count + 1;
+            resume(());
+        }
+    };
+
+    if count > 0 {
+        (sum / count) as i32
+    } else {
+        0
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Folding Sinks
+// -----------------------------------------------------------------------------
+
+/// General left fold over a stream.
+/// fold(stream, init, f) computes f(...f(f(init, x1), x2)..., xn)
+fn fold<T, R>(stream: fn() / {Emit<T>}, initial: R, combine: fn(R, T) -> R) -> R {
+    let mut acc: R = initial;
+
+    handle stream() {
+        Emit.emit(value) => {
+            acc = combine(acc, value);
+            resume(());
+        }
+    };
+
+    acc
+}
+
+/// Fold with index - the combining function receives (acc, value, index).
+fn fold_indexed<T, R>(
+    stream: fn() / {Emit<T>},
+    initial: R,
+    combine: fn(R, T, i64) -> R
+) -> R {
+    let mut acc: R = initial;
+    let mut index: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            acc = combine(acc, value, index);
+            index = index + 1;
+            resume(());
+        }
+    };
+
+    acc
+}
+
+// -----------------------------------------------------------------------------
+// Boolean Sinks
+// -----------------------------------------------------------------------------
+
+/// Check if all elements satisfy a predicate.
+/// Returns true for empty streams.
+fn all<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) -> bool {
+    let mut result: bool = true;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if !predicate(value) {
+                result = false;
+                // Early termination: don't resume, just return false
+            } else {
+                resume(());
+            }
+        }
+    };
+
+    result
+}
+
+/// Check if any element satisfies a predicate.
+/// Returns false for empty streams.
+fn any<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) -> bool {
+    let mut result: bool = false;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if predicate(value) {
+                result = true;
+                // Early termination: found one, no need to continue
+            } else {
+                resume(());
+            }
+        }
+    };
+
+    result
+}
+
+/// Check if no elements satisfy a predicate.
+/// Returns true for empty streams.
+fn none<T>(stream: fn() / {Emit<T>}, predicate: fn(T) -> bool) -> bool {
+    let mut result: bool = true;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if predicate(value) {
+                result = false;
+            } else {
+                resume(());
+            }
+        }
+    };
+
+    result
+}
+
+// -----------------------------------------------------------------------------
+// First/Last Sinks
+// -----------------------------------------------------------------------------
+
+/// Get the first element of a stream, or None if empty.
+fn first<T>(stream: fn() / {Emit<T>}) -> Option<T> {
+    let mut result: Option<T> = Option::None;
+
+    handle stream() {
+        Emit.emit(value) => {
+            result = Option::Some(value);
+            // Don't resume - we only want the first element
+        }
+    };
+
+    result
+}
+
+/// Get the last element of a stream, or None if empty.
+fn last<T>(stream: fn() / {Emit<T>}) -> Option<T> {
+    let mut result: Option<T> = Option::None;
+
+    handle stream() {
+        Emit.emit(value) => {
+            result = Option::Some(value);
+            resume(());
+        }
+    };
+
+    result
+}
+
+/// Get the nth element (0-indexed), or None if stream has fewer elements.
+fn nth<T>(stream: fn() / {Emit<T>}, n: i64) -> Option<T> {
+    let mut result: Option<T> = Option::None;
+    let mut index: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if index == n {
+                result = Option::Some(value);
+                // Don't resume - found what we wanted
+            } else {
+                index = index + 1;
+                resume(());
+            }
+        }
+    };
+
+    result
+}
+
+// -----------------------------------------------------------------------------
+// Statistical Sinks
+// -----------------------------------------------------------------------------
+
+/// Compute sum and count together (for efficiency).
+struct SumCount {
+    sum: i64,
+    count: i64,
+}
+
+fn sum_and_count(stream: fn() / {Emit<i32>}) -> SumCount {
+    let mut sum: i64 = 0;
+    let mut count: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            sum = sum + (value as i64);
+            count = count + 1;
+            resume(());
+        }
+    };
+
+    SumCount { sum: sum, count: count }
+}
+
+/// Compute min and max together.
+struct MinMax {
+    min: i32,
+    max: i32,
+    found: bool,
+}
+
+fn min_and_max(stream: fn() / {Emit<i32>}) -> MinMax {
+    let mut min_val: i32 = 2147483647;
+    let mut max_val: i32 = -2147483648;
+    let mut found: bool = false;
+
+    handle stream() {
+        Emit.emit(value) => {
+            found = true;
+            if value < min_val {
+                min_val = value;
+            }
+            if value > max_val {
+                max_val = value;
+            }
+            resume(());
+        }
+    };
+
+    MinMax { min: min_val, max: max_val, found: found }
+}
+
+// -----------------------------------------------------------------------------
+// Void Sink (for side effects)
+// -----------------------------------------------------------------------------
+
+/// Consume all elements, discarding them.
+/// Useful when stream has side effects we want to execute.
+fn drain<T>(stream: fn() / {Emit<T>}) {
+    handle stream() {
+        Emit.emit(_value) => {
+            resume(());
+        }
+    };
+}
+
+/// Execute a function for each element (for side effects).
+fn for_each<T>(stream: fn() / {Emit<T>}, action: fn(T) -> ()) {
+    handle stream() {
+        Emit.emit(value) => {
+            action(value);
+            resume(());
+        }
+    };
+}

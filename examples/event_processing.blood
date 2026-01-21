@@ -1,0 +1,584 @@
+// =============================================================================
+// Aether Example: Real-Time Event Processing System
+// =============================================================================
+//
+// A complex event processing (CEP) system that demonstrates:
+// - Pattern matching on event streams
+// - Windowed aggregations
+// - Alert generation with cascading effects
+// - State machines using effects
+//
+// Use case: Financial trading system monitoring
+//
+
+// -----------------------------------------------------------------------------
+// Core Effects
+// -----------------------------------------------------------------------------
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+effect State<S> {
+    op get() -> S;
+    op put(s: S) -> ();
+}
+
+effect Alert {
+    op raise_alert(level: i32, message: i32) -> ();
+}
+
+effect Time {
+    op now() -> i64;
+    op elapsed_since(start: i64) -> i64;
+}
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+// -----------------------------------------------------------------------------
+// Domain Types: Financial Events
+// -----------------------------------------------------------------------------
+
+/// Types of market events
+enum EventType {
+    Trade,
+    Quote,
+    Order,
+    Cancel,
+    MarketData,
+}
+
+/// A market event with metadata
+struct MarketEvent {
+    event_type: EventType,
+    symbol_id: i32,
+    timestamp: i64,
+    price: i64,        // Price in cents
+    quantity: i32,
+    is_buy: bool,
+}
+
+/// Price movement direction
+enum Trend {
+    Up,
+    Down,
+    Flat,
+}
+
+/// Computed metrics for a symbol
+struct SymbolMetrics {
+    symbol_id: i32,
+    last_price: i64,
+    high_price: i64,
+    low_price: i64,
+    volume: i64,
+    trade_count: i32,
+    avg_price: i64,
+    trend: Trend,
+    volatility: i32,  // Scaled 0-100
+}
+
+/// Alert levels
+struct AlertInfo {
+    level: i32,        // 1=info, 2=warning, 3=critical
+    symbol_id: i32,
+    event_code: i32,
+    threshold: i64,
+    actual: i64,
+}
+
+// -----------------------------------------------------------------------------
+// Event Sources
+// -----------------------------------------------------------------------------
+
+/// Generate simulated market events for testing
+fn market_event_source(
+    num_symbols: i32,
+    events_per_symbol: i32
+) / {Emit<MarketEvent>} {
+    // Generate events with realistic patterns
+    let mut base_prices: [i64; 8] = [10000, 15000, 5000, 20000, 8000, 12000, 3000, 25000];
+
+    let mut symbol: i32 = 0;
+    while symbol < num_symbols && symbol < 8 {
+        let mut event_num: i32 = 0;
+        let base_price: i64 = base_prices[symbol];
+
+        while event_num < events_per_symbol {
+            // Simulate price movement
+            let price_delta: i64 = ((event_num * 17 + symbol * 31) % 200 - 100) as i64;
+            let price: i64 = base_price + price_delta;
+
+            // Vary event types
+            let event_type: EventType = match event_num % 5 {
+                0 => EventType::Trade,
+                1 => EventType::Trade,
+                2 => EventType::Quote,
+                3 => EventType::Order,
+                _ => EventType::Trade,
+            };
+
+            // Vary quantities
+            let quantity: i32 = 100 + (event_num * 7) % 900;
+
+            // Alternate buy/sell
+            let is_buy: bool = event_num % 3 != 0;
+
+            perform Emit.emit(MarketEvent {
+                event_type: event_type,
+                symbol_id: symbol,
+                timestamp: (symbol * 10000 + event_num) as i64,
+                price: price,
+                quantity: quantity,
+                is_buy: is_buy,
+            });
+
+            event_num = event_num + 1;
+        }
+        symbol = symbol + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Filtering Operators
+// -----------------------------------------------------------------------------
+
+/// Filter for trades only
+fn trades_only(
+    stream: fn() / {Emit<MarketEvent>}
+) / {Emit<MarketEvent>} {
+    handle stream() {
+        Emit.emit(event) => {
+            match event.event_type {
+                EventType::Trade => {
+                    perform Emit.emit(event);
+                },
+                _ => {},
+            }
+            resume(());
+        }
+    };
+}
+
+/// Filter for specific symbol
+fn filter_symbol(
+    stream: fn() / {Emit<MarketEvent>},
+    symbol_id: i32
+) / {Emit<MarketEvent>} {
+    handle stream() {
+        Emit.emit(event) => {
+            if event.symbol_id == symbol_id {
+                perform Emit.emit(event);
+            }
+            resume(());
+        }
+    };
+}
+
+/// Filter for large orders (quantity > threshold)
+fn filter_large_orders(
+    stream: fn() / {Emit<MarketEvent>},
+    threshold: i32
+) / {Emit<MarketEvent>} {
+    handle stream() {
+        Emit.emit(event) => {
+            if event.quantity > threshold {
+                perform Emit.emit(event);
+            }
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Aggregation: Compute Rolling Metrics
+// -----------------------------------------------------------------------------
+
+/// Compute metrics per symbol using stateful processing
+fn compute_metrics(
+    stream: fn() / {Emit<MarketEvent>}
+) / {Emit<SymbolMetrics>} {
+    // State for up to 8 symbols
+    let mut last_prices: [i64; 8] = [0; 8];
+    let mut high_prices: [i64; 8] = [0; 8];
+    let mut low_prices: [i64; 8] = [9223372036854775807; 8];  // i64::MAX
+    let mut volumes: [i64; 8] = [0; 8];
+    let mut trade_counts: [i32; 8] = [0; 8];
+    let mut price_sums: [i64; 8] = [0; 8];
+    let mut prev_prices: [i64; 8] = [0; 8];
+
+    handle stream() {
+        Emit.emit(event) => {
+            let idx: i32 = event.symbol_id;
+            if idx >= 0 && idx < 8 {
+                // Update metrics
+                prev_prices[idx] = last_prices[idx];
+                last_prices[idx] = event.price;
+
+                if event.price > high_prices[idx] {
+                    high_prices[idx] = event.price;
+                }
+                if event.price < low_prices[idx] {
+                    low_prices[idx] = event.price;
+                }
+
+                volumes[idx] = volumes[idx] + (event.quantity as i64);
+                trade_counts[idx] = trade_counts[idx] + 1;
+                price_sums[idx] = price_sums[idx] + event.price;
+
+                // Compute trend
+                let trend: Trend = if prev_prices[idx] == 0 {
+                    Trend::Flat
+                } else if event.price > prev_prices[idx] {
+                    Trend::Up
+                } else if event.price < prev_prices[idx] {
+                    Trend::Down
+                } else {
+                    Trend::Flat
+                };
+
+                // Compute volatility (simplified: range as % of average)
+                let avg: i64 = price_sums[idx] / (trade_counts[idx] as i64);
+                let range: i64 = high_prices[idx] - low_prices[idx];
+                let volatility: i32 = if avg > 0 {
+                    ((range * 100) / avg) as i32
+                } else {
+                    0
+                };
+
+                // Emit updated metrics
+                perform Emit.emit(SymbolMetrics {
+                    symbol_id: idx,
+                    last_price: last_prices[idx],
+                    high_price: high_prices[idx],
+                    low_price: low_prices[idx],
+                    volume: volumes[idx],
+                    trade_count: trade_counts[idx],
+                    avg_price: avg,
+                    trend: trend,
+                    volatility: volatility,
+                });
+            }
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Pattern Detection: Anomalies
+// -----------------------------------------------------------------------------
+
+/// Detect price spikes (>5% change from average)
+fn detect_price_spikes(
+    stream: fn() / {Emit<SymbolMetrics>}
+) / {Emit<AlertInfo>} {
+    handle stream() {
+        Emit.emit(metrics) => {
+            if metrics.avg_price > 0 {
+                let deviation: i64 = if metrics.last_price > metrics.avg_price {
+                    metrics.last_price - metrics.avg_price
+                } else {
+                    metrics.avg_price - metrics.last_price
+                };
+
+                let pct: i64 = (deviation * 100) / metrics.avg_price;
+
+                if pct > 5 {
+                    let level: i32 = if pct > 10 { 3 } else { 2 };
+                    perform Emit.emit(AlertInfo {
+                        level: level,
+                        symbol_id: metrics.symbol_id,
+                        event_code: 1,  // Price spike
+                        threshold: 5,
+                        actual: pct,
+                    });
+                }
+            }
+            resume(());
+        }
+    };
+}
+
+/// Detect high volatility (>20%)
+fn detect_high_volatility(
+    stream: fn() / {Emit<SymbolMetrics>}
+) / {Emit<AlertInfo>} {
+    handle stream() {
+        Emit.emit(metrics) => {
+            if metrics.volatility > 20 {
+                let level: i32 = if metrics.volatility > 50 { 3 } else { 2 };
+                perform Emit.emit(AlertInfo {
+                    level: level,
+                    symbol_id: metrics.symbol_id,
+                    event_code: 2,  // High volatility
+                    threshold: 20,
+                    actual: metrics.volatility as i64,
+                });
+            }
+            resume(());
+        }
+    };
+}
+
+/// Detect unusual volume (>5x average)
+fn detect_volume_anomaly(
+    stream: fn() / {Emit<SymbolMetrics>},
+    baseline_volume: i64
+) / {Emit<AlertInfo>} {
+    handle stream() {
+        Emit.emit(metrics) => {
+            if metrics.volume > baseline_volume * 5 {
+                perform Emit.emit(AlertInfo {
+                    level: 2,
+                    symbol_id: metrics.symbol_id,
+                    event_code: 3,  // Volume anomaly
+                    threshold: baseline_volume * 5,
+                    actual: metrics.volume,
+                });
+            }
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// State Machine: Trading Circuit Breaker
+// -----------------------------------------------------------------------------
+
+/// Circuit breaker states
+enum CircuitState {
+    Closed,    // Normal operation
+    Open,      // Halted
+    HalfOpen,  // Testing recovery
+}
+
+/// Circuit breaker for a symbol
+struct CircuitBreaker {
+    state: CircuitState,
+    failure_count: i32,
+    success_count: i32,
+    last_state_change: i64,
+}
+
+/// Process events through circuit breaker
+fn with_circuit_breaker(
+    stream: fn() / {Emit<MarketEvent>},
+    threshold: i32
+) / {Emit<MarketEvent>, State<CircuitBreaker>} {
+    handle stream() {
+        Emit.emit(event) => {
+            let mut breaker: CircuitBreaker = perform State.get();
+
+            match breaker.state {
+                CircuitState::Closed => {
+                    // Normal: pass through
+                    perform Emit.emit(event);
+
+                    // Check for anomalies that might trip the breaker
+                    // (Simplified: random trips based on event data)
+                    if event.quantity > 5000 {
+                        breaker.failure_count = breaker.failure_count + 1;
+                        if breaker.failure_count >= threshold {
+                            breaker.state = CircuitState::Open;
+                            breaker.last_state_change = event.timestamp;
+                        }
+                    } else {
+                        breaker.success_count = breaker.success_count + 1;
+                    }
+                },
+                CircuitState::Open => {
+                    // Halted: drop events
+                    // Check if we should transition to half-open
+                    if event.timestamp - breaker.last_state_change > 10000 {
+                        breaker.state = CircuitState::HalfOpen;
+                        breaker.success_count = 0;
+                    }
+                },
+                CircuitState::HalfOpen => {
+                    // Testing: pass limited events
+                    perform Emit.emit(event);
+                    breaker.success_count = breaker.success_count + 1;
+
+                    if breaker.success_count >= 3 {
+                        // Recovered
+                        breaker.state = CircuitState::Closed;
+                        breaker.failure_count = 0;
+                    }
+                },
+            }
+
+            perform State.put(breaker);
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Windowed Aggregation
+// -----------------------------------------------------------------------------
+
+/// Time-based window for aggregation
+struct TimeWindow {
+    start_time: i64,
+    end_time: i64,
+    event_count: i32,
+    total_volume: i64,
+    total_value: i64,
+}
+
+/// Aggregate events into time windows
+fn windowed_aggregate(
+    stream: fn() / {Emit<MarketEvent>},
+    window_size: i64
+) / {Emit<TimeWindow>} {
+    let mut current_window: TimeWindow = TimeWindow {
+        start_time: 0,
+        end_time: window_size,
+        event_count: 0,
+        total_volume: 0,
+        total_value: 0,
+    };
+    let mut initialized: bool = false;
+
+    handle stream() {
+        Emit.emit(event) => {
+            if !initialized {
+                current_window.start_time = event.timestamp;
+                current_window.end_time = event.timestamp + window_size;
+                initialized = true;
+            }
+
+            // Check if event falls in current window
+            if event.timestamp >= current_window.end_time {
+                // Emit completed window
+                perform Emit.emit(current_window);
+
+                // Start new window
+                current_window = TimeWindow {
+                    start_time: event.timestamp,
+                    end_time: event.timestamp + window_size,
+                    event_count: 0,
+                    total_volume: 0,
+                    total_value: 0,
+                };
+            }
+
+            // Update window
+            current_window.event_count = current_window.event_count + 1;
+            current_window.total_volume = current_window.total_volume + (event.quantity as i64);
+            current_window.total_value = current_window.total_value + (event.price * (event.quantity as i64));
+
+            resume(());
+        }
+    };
+
+    // Emit final partial window
+    if current_window.event_count > 0 {
+        perform Emit.emit(current_window);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Alert Aggregation
+// -----------------------------------------------------------------------------
+
+/// Summary of alerts generated
+struct AlertSummary {
+    info_count: i32,
+    warning_count: i32,
+    critical_count: i32,
+    unique_symbols: i32,
+}
+
+/// Collect and summarize alerts
+fn summarize_alerts(
+    stream: fn() / {Emit<AlertInfo>}
+) -> AlertSummary {
+    let mut summary: AlertSummary = AlertSummary {
+        info_count: 0,
+        warning_count: 0,
+        critical_count: 0,
+        unique_symbols: 0,
+    };
+
+    let mut seen_symbols: [bool; 8] = [false; 8];
+
+    handle stream() {
+        Emit.emit(alert) => {
+            match alert.level {
+                1 => { summary.info_count = summary.info_count + 1; },
+                2 => { summary.warning_count = summary.warning_count + 1; },
+                3 => { summary.critical_count = summary.critical_count + 1; },
+                _ => {},
+            }
+
+            if alert.symbol_id >= 0 && alert.symbol_id < 8 {
+                if !seen_symbols[alert.symbol_id] {
+                    seen_symbols[alert.symbol_id] = true;
+                    summary.unique_symbols = summary.unique_symbols + 1;
+                }
+            }
+
+            resume(());
+        }
+    };
+
+    summary
+}
+
+// -----------------------------------------------------------------------------
+// Complete Pipeline
+// -----------------------------------------------------------------------------
+
+/// Run the full event processing pipeline
+fn run_cep_pipeline() -> AlertSummary {
+    // Pipeline:
+    // market_event_source
+    //   -> trades_only
+    //   -> compute_metrics
+    //   -> detect_price_spikes
+    //   -> summarize_alerts
+
+    summarize_alerts(|| {
+        detect_price_spikes(|| {
+            compute_metrics(|| {
+                trades_only(|| {
+                    market_event_source(4, 200);
+                });
+            });
+        });
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
+
+fn main() {
+    println_str("=== Financial Event Processing Demo ===");
+    println_str("");
+
+    let summary: AlertSummary = run_cep_pipeline();
+
+    println_str("Alert Summary:");
+    println_str("  Info alerts:");
+    println_int(summary.info_count);
+    println_str("  Warning alerts:");
+    println_int(summary.warning_count);
+    println_str("  Critical alerts:");
+    println_int(summary.critical_count);
+    println_str("  Symbols affected:");
+    println_int(summary.unique_symbols);
+
+    println_str("");
+    println_str("Processing complete!");
+}
+
+fn println_str(s: &str) {
+}
+
+fn println_int(n: i32) {
+}

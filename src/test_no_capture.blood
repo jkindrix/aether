@@ -1,0 +1,52 @@
+// Test that operations WITHOUT parameter capture in closures work
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+fn take<T>(stream: fn() / {Emit<T>}, n: i32) / {Emit<T>} {
+    let mut count: i32 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            if count < n {
+                perform Emit.emit(value);
+                count = count + 1;
+                resume(());
+            }
+            // Don't resume after n - early termination
+        }
+    };
+}
+
+fn sum(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut total: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            total = total + (value as i64);
+            resume(());
+        }
+    };
+    total
+}
+
+fn main() -> i32 {
+    // Test 1: sum of 1..11 = 55 (no param capture)
+    let s1: i64 = sum(|| / {Emit<i32>} { range(1, 11); });
+    if s1 != 55 { return 1; }
+
+    // Test 3: take first 5 from range = 1+2+3+4+5 = 15 (no param capture in closures)
+    let s3: i64 = sum(|| / {Emit<i32>} { take(|| / {Emit<i32>} { range(1, 100); }, 5); });
+    if s3 != 15 { return 3; }
+
+    0  // All tests passed!
+}

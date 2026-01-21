@@ -1,0 +1,211 @@
+// =============================================================================
+// Aether: Reactive Stream Processing Engine
+// Core Effect Definitions and Types
+// =============================================================================
+//
+// Aether demonstrates Blood's algebraic effects for building composable,
+// type-safe stream processing pipelines with backpressure support.
+//
+
+// -----------------------------------------------------------------------------
+// Core Stream Effects
+// -----------------------------------------------------------------------------
+
+/// The fundamental effect for producing values in a stream.
+/// A computation with `Emit<T>` can yield values of type T to its handler.
+effect Emit<T> {
+    /// Emit a single value downstream. The handler controls when to resume.
+    op emit(value: T) -> ();
+}
+
+/// Effect for consuming values from an upstream source.
+/// Handlers provide values on demand, enabling pull-based backpressure.
+effect Pull<T> {
+    /// Request the next value. Returns None when stream is exhausted.
+    op pull() -> Option<T>;
+}
+
+/// Effect for stateful stream transformations.
+/// Enables accumulators, windows, and stateful operators.
+effect Accumulate<S> {
+    /// Get the current accumulator state.
+    op get_state() -> S;
+    /// Update the accumulator state.
+    op set_state(new_state: S) -> ();
+    /// Modify state with a function (convenience for get + modify + set).
+    op modify_state(delta: S) -> S;
+}
+
+/// Effect for handling stream errors with typed recovery.
+effect StreamError<E> {
+    /// Signal an error in the stream. Handler decides recovery strategy.
+    op fail(error: E) -> never;
+    /// Signal a warning (non-fatal). Handler may log or ignore.
+    op warn(error: E) -> ();
+}
+
+/// Effect for stream lifecycle management.
+effect Lifecycle {
+    /// Called when stream processing begins.
+    op on_start() -> ();
+    /// Called when stream completes successfully.
+    op on_complete() -> ();
+    /// Called on abnormal termination.
+    op on_cancel() -> ();
+}
+
+// -----------------------------------------------------------------------------
+// Core Types
+// -----------------------------------------------------------------------------
+
+/// Represents the absence of a value (for optional operations).
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+/// Represents either success or failure with typed error.
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+/// A stream element with metadata for tracking and debugging.
+struct StreamElement<T> {
+    value: T,
+    timestamp: i64,
+    sequence: i64,
+}
+
+/// Stream processing statistics for monitoring.
+struct StreamStats {
+    elements_processed: i64,
+    elements_dropped: i64,
+    errors_encountered: i64,
+    start_time: i64,
+    last_element_time: i64,
+}
+
+/// Configuration for stream processing behavior.
+struct StreamConfig {
+    buffer_size: i32,
+    timeout_ms: i64,
+    max_retries: i32,
+    enable_metrics: bool,
+}
+
+// -----------------------------------------------------------------------------
+// Error Types
+// -----------------------------------------------------------------------------
+
+/// Common stream processing errors.
+enum StreamErrorKind {
+    /// Upstream source exhausted unexpectedly.
+    SourceExhausted,
+    /// Downstream sink rejected element.
+    SinkRejected,
+    /// Processing timeout exceeded.
+    Timeout,
+    /// Buffer overflow (backpressure failure).
+    Overflow,
+    /// User-defined processing error.
+    ProcessingError,
+    /// Cancelled by user or system.
+    Cancelled,
+}
+
+/// Detailed error with context.
+struct StreamFailure {
+    kind: StreamErrorKind,
+    message: i64,
+    sequence_at_failure: i64,
+}
+
+// -----------------------------------------------------------------------------
+// Default Configuration
+// -----------------------------------------------------------------------------
+
+/// Create a default stream configuration.
+fn default_config() -> StreamConfig {
+    StreamConfig {
+        buffer_size: 1024,
+        timeout_ms: 30000,
+        max_retries: 3,
+        enable_metrics: true,
+    }
+}
+
+/// Create an initial stats tracker.
+fn initial_stats() -> StreamStats {
+    StreamStats {
+        elements_processed: 0,
+        elements_dropped: 0,
+        errors_encountered: 0,
+        start_time: 0,
+        last_element_time: 0,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Option Utilities
+// -----------------------------------------------------------------------------
+
+/// Check if option contains a value.
+fn is_some<T>(opt: Option<T>) -> bool {
+    match opt {
+        Option::Some(_) => true,
+        Option::None => false,
+    }
+}
+
+/// Check if option is empty.
+fn is_none<T>(opt: Option<T>) -> bool {
+    match opt {
+        Option::Some(_) => false,
+        Option::None => true,
+    }
+}
+
+/// Unwrap option or return default value.
+fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
+    match opt {
+        Option::Some(v) => v,
+        Option::None => default,
+    }
+}
+
+/// Map a function over an option.
+fn map_option<T, U>(opt: Option<T>, f: fn(T) -> U) -> Option<U> {
+    match opt {
+        Option::Some(v) => Option::Some(f(v)),
+        Option::None => Option::None,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Result Utilities
+// -----------------------------------------------------------------------------
+
+/// Check if result is success.
+fn is_ok<T, E>(res: Result<T, E>) -> bool {
+    match res {
+        Result::Ok(_) => true,
+        Result::Err(_) => false,
+    }
+}
+
+/// Check if result is failure.
+fn is_err<T, E>(res: Result<T, E>) -> bool {
+    match res {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+}
+
+/// Unwrap result or return default on error.
+fn unwrap_or_default<T, E>(res: Result<T, E>, default: T) -> T {
+    match res {
+        Result::Ok(v) => v,
+        Result::Err(_) => default,
+    }
+}

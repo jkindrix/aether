@@ -1,0 +1,12 @@
+fn apply_pred(x: i32, pred: fn(i32) -> bool) -> bool {
+    pred(x)
+}
+
+fn main() -> i32 {
+    let is_even_inline = |x: i32| -> bool { x % 2 == 0 };
+    if !is_even_inline(2) { return 1; }
+    if is_even_inline(3) { return 2; }
+    if !apply_pred(4, |x: i32| -> bool { x % 2 == 0 }) { return 3; }
+    if apply_pred(5, |x: i32| -> bool { x % 2 == 0 }) { return 4; }
+    0
+}

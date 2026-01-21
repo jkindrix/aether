@@ -1,0 +1,31 @@
+// Count test - explicit i64 literal
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+fn count_i32(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut n: i64 = 0;
+    let one: i64 = 1;  // Pre-declare as i64
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            n = n + one;  // Use the pre-declared i64
+            resume(());
+        }
+    };
+    n
+}
+
+fn main() -> i32 {
+    let c: i64 = count_i32(|| / {Emit<i32>} { range(1, 11); });
+    c as i32  // Should be 10
+}

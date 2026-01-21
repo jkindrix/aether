@@ -1,0 +1,15 @@
+// Test generic function with function parameters
+
+fn apply<T, U>(f: fn(T) -> U, x: T) -> U {
+    f(x)
+}
+
+fn double(x: i32) -> i32 {
+    x * 2
+}
+
+fn main() -> i32 {
+    let result: i32 = apply(double, 21);
+    if result == 42 { return 0; }
+    result
+}

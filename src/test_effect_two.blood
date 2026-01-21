@@ -1,0 +1,36 @@
+// Test: generic function with effectful stream + pure predicate
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+// Generic function with effectful first param, pure second param
+fn filter<T>(stream: fn() / {Emit<T>}, pred: fn(T) -> bool) / {Emit<T>} {
+    // Body doesn't matter for monomorphization error
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            if pred(value) {
+                perform Emit.emit(value);
+            }
+            resume(());
+        }
+    };
+}
+
+fn emit_one() / {Emit<i32>} {
+    perform Emit.emit(42);
+}
+
+fn is_positive(x: i32) -> bool {
+    x > 0
+}
+
+fn main() -> i32 {
+    // Call filter with concrete types
+    try { filter(emit_one, is_positive); }
+    with {
+        Emit.emit(_v) => { resume(()); }
+    };
+    0
+}

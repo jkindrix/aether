@@ -1,0 +1,40 @@
+// Test simple closure parameter capture
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+fn sum(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut total: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            total = total + (value as i64);
+            resume(());
+        }
+    };
+    total
+}
+
+// Simple: capture n in one closure level
+fn sum_to(n: i32) -> i64 {
+    sum(|| / {Emit<i32>} {
+        range(1, n + 1);  // Captures n
+    })
+}
+
+fn main() -> i32 {
+    let result: i64 = sum_to(10);
+    // Should be 1+2+...+10 = 55
+    if result == 55 { return 0; }
+    if result == 0 { return 99; }
+    (result as i32)
+}

@@ -1,0 +1,557 @@
+// =============================================================================
+// Aether: Windowed Stream Processing
+// =============================================================================
+//
+// This module provides proper sliding window implementations that maintain
+// element history, addressing the limitation noted in backpressure.blood.
+//
+// Window Types:
+// - Tumbling: Non-overlapping, fixed-size windows
+// - Sliding: Overlapping windows with configurable slide
+// - Session: Dynamic windows based on activity gaps
+// - Count-based: Windows defined by element count
+// - Time-based: Windows defined by time duration
+//
+
+// -----------------------------------------------------------------------------
+// Core Definitions
+// -----------------------------------------------------------------------------
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+// -----------------------------------------------------------------------------
+// Ring Buffer for Element History
+// -----------------------------------------------------------------------------
+
+/// A fixed-size ring buffer for maintaining sliding window history.
+/// Stores up to MAX_WINDOW_SIZE elements with O(1) add/remove.
+const MAX_WINDOW_SIZE: i32 = 64;
+
+/// Ring buffer storing i32 elements with metadata.
+struct RingBuffer {
+    /// Element storage.
+    data: [i32; 64],
+    /// Index of oldest element.
+    head: i32,
+    /// Index where next element goes.
+    tail: i32,
+    /// Current number of elements.
+    count: i32,
+    /// Maximum capacity.
+    capacity: i32,
+}
+
+/// Create an empty ring buffer with given capacity (max 64).
+fn new_ring_buffer(capacity: i32) -> RingBuffer {
+    let cap: i32 = if capacity > 64 { 64 } else { capacity };
+    RingBuffer {
+        data: [0; 64],
+        head: 0,
+        tail: 0,
+        count: 0,
+        capacity: cap,
+    }
+}
+
+/// Add element to ring buffer. If full, overwrites oldest.
+fn ring_push(buf: RingBuffer, value: i32) -> RingBuffer {
+    let mut result: RingBuffer = buf;
+    result.data[result.tail] = value;
+    result.tail = (result.tail + 1) % result.capacity;
+
+    if result.count < result.capacity {
+        result.count = result.count + 1;
+    } else {
+        // Buffer full, advance head (discard oldest)
+        result.head = (result.head + 1) % result.capacity;
+    }
+    result
+}
+
+/// Remove oldest element from ring buffer. Returns (element, new_buffer).
+fn ring_pop(buf: RingBuffer) -> (i32, RingBuffer) {
+    if buf.count == 0 {
+        return (0, buf);
+    }
+    let value: i32 = buf.data[buf.head];
+    let mut result: RingBuffer = buf;
+    result.head = (result.head + 1) % result.capacity;
+    result.count = result.count - 1;
+    (value, result)
+}
+
+/// Get element at index (0 = oldest).
+fn ring_get(buf: RingBuffer, index: i32) -> i32 {
+    if index < 0 || index >= buf.count {
+        return 0;
+    }
+    let actual_idx: i32 = (buf.head + index) % buf.capacity;
+    buf.data[actual_idx]
+}
+
+/// Compute sum of all elements in buffer.
+fn ring_sum(buf: RingBuffer) -> i64 {
+    let mut sum: i64 = 0;
+    let mut i: i32 = 0;
+    while i < buf.count {
+        sum = sum + (ring_get(buf, i) as i64);
+        i = i + 1;
+    }
+    sum
+}
+
+/// Check if buffer is full.
+fn ring_is_full(buf: RingBuffer) -> bool {
+    buf.count >= buf.capacity
+}
+
+/// Check if buffer is empty.
+fn ring_is_empty(buf: RingBuffer) -> bool {
+    buf.count == 0
+}
+
+// -----------------------------------------------------------------------------
+// Window Result Types
+// -----------------------------------------------------------------------------
+
+/// Result of windowed aggregation.
+struct WindowResult {
+    /// Window sequence number.
+    window_id: i64,
+    /// Number of elements in window.
+    count: i32,
+    /// Sum of elements.
+    sum: i64,
+    /// Average of elements (sum / count).
+    avg: i64,
+    /// Minimum element.
+    min: i32,
+    /// Maximum element.
+    max: i32,
+}
+
+/// Create an empty window result.
+fn empty_window_result(window_id: i64) -> WindowResult {
+    WindowResult {
+        window_id: window_id,
+        count: 0,
+        sum: 0,
+        avg: 0,
+        min: 2147483647,
+        max: -2147483648,
+    }
+}
+
+/// Compute window result from ring buffer.
+fn compute_window_result(buf: RingBuffer, window_id: i64) -> WindowResult {
+    if buf.count == 0 {
+        return empty_window_result(window_id);
+    }
+
+    let mut sum: i64 = 0;
+    let mut min: i32 = 2147483647;
+    let mut max: i32 = -2147483648;
+    let mut i: i32 = 0;
+
+    while i < buf.count {
+        let val: i32 = ring_get(buf, i);
+        sum = sum + (val as i64);
+        if val < min { min = val; }
+        if val > max { max = val; }
+        i = i + 1;
+    }
+
+    WindowResult {
+        window_id: window_id,
+        count: buf.count,
+        sum: sum,
+        avg: sum / (buf.count as i64),
+        min: min,
+        max: max,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tumbling Window (Non-overlapping)
+// -----------------------------------------------------------------------------
+
+/// Tumbling window: emit aggregates for non-overlapping fixed-size windows.
+/// Example: window_size=3 on [1,2,3,4,5,6,7] → [{1,2,3}, {4,5,6}, {7}]
+fn tumbling_window(
+    stream: fn() / {Emit<i32>},
+    window_size: i32
+) / {Emit<WindowResult>} {
+    let mut buf: RingBuffer = new_ring_buffer(window_size);
+    let mut window_id: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            buf = ring_push(buf, value);
+
+            // Emit when window is full
+            if buf.count >= window_size {
+                perform Emit.emit(compute_window_result(buf, window_id));
+                buf = new_ring_buffer(window_size);  // Reset for next window
+                window_id = window_id + 1;
+            }
+
+            resume(());
+        }
+    };
+
+    // Emit final partial window if any elements remain
+    if buf.count > 0 {
+        perform Emit.emit(compute_window_result(buf, window_id));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// True Sliding Window (Overlapping)
+// -----------------------------------------------------------------------------
+
+/// Sliding window: emit aggregates for overlapping windows.
+/// Window slides by `slide` elements, maintaining `window_size` history.
+/// Example: size=3, slide=1 on [1,2,3,4,5] → [{1,2,3}, {2,3,4}, {3,4,5}]
+fn sliding_window(
+    stream: fn() / {Emit<i32>},
+    window_size: i32,
+    slide: i32
+) / {Emit<WindowResult>} {
+    let mut buf: RingBuffer = new_ring_buffer(window_size);
+    let mut window_id: i64 = 0;
+    let mut since_last_emit: i32 = 0;
+    let mut total_elements: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            buf = ring_push(buf, value);
+            total_elements = total_elements + 1;
+            since_last_emit = since_last_emit + 1;
+
+            // Emit when:
+            // 1. Buffer is full (first window), OR
+            // 2. We've slid by 'slide' elements since last emit
+            let should_emit: bool = (buf.count >= window_size) && (since_last_emit >= slide);
+
+            // Special case: first full window
+            if window_id == 0 && buf.count >= window_size {
+                perform Emit.emit(compute_window_result(buf, window_id));
+                window_id = window_id + 1;
+                since_last_emit = 0;
+            } else if should_emit && window_id > 0 {
+                perform Emit.emit(compute_window_result(buf, window_id));
+                window_id = window_id + 1;
+                since_last_emit = 0;
+            }
+
+            resume(());
+        }
+    };
+
+    // Emit final window if we have enough elements and haven't just emitted
+    if buf.count > 0 && since_last_emit > 0 {
+        perform Emit.emit(compute_window_result(buf, window_id));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Hopping Window (Alias for Sliding with slide > 1)
+// -----------------------------------------------------------------------------
+
+/// Hopping window: like sliding but with larger slide (gaps between windows).
+/// Example: size=3, hop=2 on [1,2,3,4,5,6,7] → [{1,2,3}, {3,4,5}, {5,6,7}]
+fn hopping_window(
+    stream: fn() / {Emit<i32>},
+    window_size: i32,
+    hop: i32
+) / {Emit<WindowResult>} {
+    sliding_window(stream, window_size, hop);
+}
+
+// -----------------------------------------------------------------------------
+// Session Window (Gap-based)
+// -----------------------------------------------------------------------------
+
+/// Session window: group elements until a gap in activity.
+/// Useful for event sessions where gaps define boundaries.
+struct SessionState {
+    buf: RingBuffer,
+    last_timestamp: i64,
+    window_id: i64,
+}
+
+/// Session window with timestamp-based gap detection.
+/// Elements with timestamp gap > session_gap start a new window.
+fn session_window(
+    stream: fn() / {Emit<(i64, i32)>},  // (timestamp, value) pairs
+    session_gap: i64
+) / {Emit<WindowResult>} {
+    let mut buf: RingBuffer = new_ring_buffer(64);
+    let mut last_ts: i64 = 0;
+    let mut window_id: i64 = 0;
+    let mut first: bool = true;
+
+    handle stream() {
+        Emit.emit(pair) => {
+            let ts: i64 = pair.0;
+            let value: i32 = pair.1;
+
+            // Check for session boundary
+            if !first && (ts - last_ts) > session_gap {
+                // Gap detected: emit current session, start new
+                if buf.count > 0 {
+                    perform Emit.emit(compute_window_result(buf, window_id));
+                    window_id = window_id + 1;
+                    buf = new_ring_buffer(64);
+                }
+            }
+
+            buf = ring_push(buf, value);
+            last_ts = ts;
+            first = false;
+
+            resume(());
+        }
+    };
+
+    // Emit final session
+    if buf.count > 0 {
+        perform Emit.emit(compute_window_result(buf, window_id));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Count-Based Sliding Window
+// -----------------------------------------------------------------------------
+
+/// Emit window result every N elements, maintaining window_size history.
+/// This is a common pattern for "every N elements, compute over last M".
+fn count_sliding_window(
+    stream: fn() / {Emit<i32>},
+    window_size: i32,
+    emit_every: i32
+) / {Emit<WindowResult>} {
+    let mut buf: RingBuffer = new_ring_buffer(window_size);
+    let mut count: i32 = 0;
+    let mut window_id: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            buf = ring_push(buf, value);
+            count = count + 1;
+
+            if count >= emit_every {
+                perform Emit.emit(compute_window_result(buf, window_id));
+                window_id = window_id + 1;
+                count = 0;
+            }
+
+            resume(());
+        }
+    };
+
+    // Optionally emit final partial window
+    if count > 0 && buf.count > 0 {
+        perform Emit.emit(compute_window_result(buf, window_id));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Moving Average
+// -----------------------------------------------------------------------------
+
+/// Emit moving average after each element (sliding window of 1).
+fn moving_average(
+    stream: fn() / {Emit<i32>},
+    window_size: i32
+) / {Emit<i64>} {
+    let mut buf: RingBuffer = new_ring_buffer(window_size);
+
+    handle stream() {
+        Emit.emit(value) => {
+            buf = ring_push(buf, value);
+
+            // Only emit once we have a full window
+            if buf.count >= window_size {
+                let sum: i64 = ring_sum(buf);
+                let avg: i64 = sum / (buf.count as i64);
+                perform Emit.emit(avg);
+            }
+
+            resume(());
+        }
+    };
+}
+
+/// Emit running (cumulative) average - starts emitting immediately.
+fn running_average(stream: fn() / {Emit<i32>}) / {Emit<i64>} {
+    let mut sum: i64 = 0;
+    let mut count: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            sum = sum + (value as i64);
+            count = count + 1;
+            perform Emit.emit(sum / count);
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Windowed Aggregation with Custom Function
+// -----------------------------------------------------------------------------
+
+/// Apply custom aggregation function to each window.
+fn windowed_fold<R>(
+    stream: fn() / {Emit<i32>},
+    window_size: i32,
+    slide: i32,
+    initial: R,
+    fold_fn: fn(R, i32) -> R
+) / {Emit<R>} {
+    let mut buf: RingBuffer = new_ring_buffer(window_size);
+    let mut since_emit: i32 = 0;
+    let mut started: bool = false;
+
+    handle stream() {
+        Emit.emit(value) => {
+            buf = ring_push(buf, value);
+            since_emit = since_emit + 1;
+
+            if buf.count >= window_size {
+                if !started || since_emit >= slide {
+                    // Compute fold over window
+                    let mut acc: R = initial;
+                    let mut i: i32 = 0;
+                    while i < buf.count {
+                        acc = fold_fn(acc, ring_get(buf, i));
+                        i = i + 1;
+                    }
+                    perform Emit.emit(acc);
+                    since_emit = 0;
+                    started = true;
+                }
+            }
+
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Window Boundary Detection
+// -----------------------------------------------------------------------------
+
+/// Emit markers at window boundaries (useful for debugging/visualization).
+struct WindowMarker {
+    is_start: bool,
+    is_end: bool,
+    window_id: i64,
+    position_in_window: i32,
+}
+
+fn with_window_markers(
+    stream: fn() / {Emit<i32>},
+    window_size: i32
+) / {Emit<(i32, WindowMarker)>} {
+    let mut count: i32 = 0;
+    let mut window_id: i64 = 0;
+
+    handle stream() {
+        Emit.emit(value) => {
+            let pos: i32 = count % window_size;
+            let marker: WindowMarker = WindowMarker {
+                is_start: pos == 0,
+                is_end: pos == window_size - 1,
+                window_id: window_id,
+                position_in_window: pos,
+            };
+
+            perform Emit.emit((value, marker));
+
+            count = count + 1;
+            if count % window_size == 0 {
+                window_id = window_id + 1;
+            }
+
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Exponential Moving Average (EMA)
+// -----------------------------------------------------------------------------
+
+/// Exponential moving average - more recent values weighted more heavily.
+/// Alpha is the smoothing factor (0-100, representing 0.00-1.00).
+/// Higher alpha = more weight to recent values.
+fn exponential_moving_average(
+    stream: fn() / {Emit<i32>},
+    alpha_percent: i32  // 0-100
+) / {Emit<i64>} {
+    let mut ema: i64 = 0;
+    let mut first: bool = true;
+    let alpha: i64 = alpha_percent as i64;
+    let one_minus_alpha: i64 = 100 - alpha;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if first {
+                ema = (value as i64) * 100;  // Scale for precision
+                first = false;
+            } else {
+                // EMA = alpha * value + (1 - alpha) * previous_ema
+                ema = (alpha * (value as i64) + one_minus_alpha * (ema / 100)) ;
+            }
+            perform Emit.emit(ema / 100);
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Window with Gap Filling
+// -----------------------------------------------------------------------------
+
+/// Detect gaps in sequence and emit markers.
+/// Useful for time-series data with missing values.
+struct GapInfo {
+    gap_start: i64,
+    gap_end: i64,
+    missing_count: i64,
+}
+
+fn detect_gaps(
+    stream: fn() / {Emit<i64>},  // Sequence numbers or timestamps
+    expected_step: i64
+) / {Emit<GapInfo>} {
+    let mut prev: i64 = 0;
+    let mut first: bool = true;
+
+    handle stream() {
+        Emit.emit(value) => {
+            if !first {
+                let expected: i64 = prev + expected_step;
+                if value > expected {
+                    perform Emit.emit(GapInfo {
+                        gap_start: prev,
+                        gap_end: value,
+                        missing_count: (value - prev) / expected_step - 1,
+                    });
+                }
+            }
+            prev = value;
+            first = false;
+            resume(());
+        }
+    };
+}

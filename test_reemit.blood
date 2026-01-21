@@ -1,0 +1,32 @@
+// Test re-emit pattern
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn emit_three() / {Emit<i32>} {
+    perform Emit.emit(1);
+    perform Emit.emit(2);
+    perform Emit.emit(3);
+}
+
+fn main() -> i32 {
+    let mut total: i32 = 0;
+
+    try {
+        try { emit_three(); }
+        with {
+            Emit.emit(value) => {
+                perform Emit.emit(value * 2);
+                resume(());
+            }
+        };
+    } with {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+
+    total  // Should be 2 + 4 + 6 = 12
+}

@@ -1,0 +1,30 @@
+// Debug: what value does n have inside closure?
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn sum(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut total: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            total = total + (value as i64);
+            resume(());
+        }
+    };
+    total
+}
+
+// Emit n once to see what it is
+fn emit_n(n: i32) -> i64 {
+    sum(|| / {Emit<i32>} {
+        perform Emit.emit(n);
+    })
+}
+
+fn main() -> i32 {
+    // Should return 42 if capture works
+    let result: i64 = emit_n(42);
+    result as i32
+}

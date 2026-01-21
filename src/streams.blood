@@ -1,0 +1,250 @@
+// =============================================================================
+// Aether Core: Stream Processing with Algebraic Effects
+// =============================================================================
+//
+// Rewritten using Blood's actual syntax:
+// - try { } with { } for inline handlers
+// - Emit.emit(value) for handler patterns (consistent with perform)
+// - {Effect | E} for row polymorphism
+//
+
+// -----------------------------------------------------------------------------
+// Core Effect
+// -----------------------------------------------------------------------------
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+// -----------------------------------------------------------------------------
+// Sources
+// -----------------------------------------------------------------------------
+
+/// Emit integers from start (inclusive) to end (exclusive)
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+/// Emit a single value
+fn emit_one<T>(value: T) / {Emit<T>} {
+    perform Emit.emit(value);
+}
+
+/// Emit nothing (empty stream)
+fn empty<T>() / {Emit<T>} {
+    // No emissions
+}
+
+/// Repeat a value n times
+fn repeat<T>(value: T, n: i32) / {Emit<T>} {
+    let mut i: i32 = 0;
+    while i < n {
+        perform Emit.emit(value);
+        i = i + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Operators (using try/with inline handlers)
+// -----------------------------------------------------------------------------
+
+/// Transform each element with a function
+fn map<T, U>(stream: fn() / {Emit<T>}, f: fn(T) -> U) / {Emit<U>} {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            perform Emit.emit(f(value));
+            resume(());
+        }
+    };
+}
+
+/// Keep only elements satisfying predicate
+fn filter<T>(stream: fn() / {Emit<T>}, pred: fn(T) -> bool) / {Emit<T>} {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            if pred(value) {
+                perform Emit.emit(value);
+            }
+            resume(());
+        }
+    };
+}
+
+/// Take first n elements
+fn take<T>(stream: fn() / {Emit<T>}, n: i32) / {Emit<T>} {
+    let mut count: i32 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            if count < n {
+                perform Emit.emit(value);
+                count = count + 1;
+                resume(());
+            }
+            // Don't resume after n - early termination
+        }
+    };
+}
+
+/// Drop first n elements
+fn drop<T>(stream: fn() / {Emit<T>}, n: i32) / {Emit<T>} {
+    let mut count: i32 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            if count >= n {
+                perform Emit.emit(value);
+            }
+            count = count + 1;
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Sinks (handlers that produce final values)
+// -----------------------------------------------------------------------------
+
+/// Sum all i32 elements
+fn sum(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut total: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            total = total + (value as i64);
+            resume(());
+        }
+    };
+    total
+}
+
+/// Count elements
+fn count<T>(stream: fn() / {Emit<T>}) -> i64 {
+    let mut n: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(_value) => {
+            n = n + 1;
+            resume(());
+        }
+    };
+    n
+}
+
+/// Fold/reduce with accumulator
+fn fold<T, R>(stream: fn() / {Emit<T>}, init: R, f: fn(R, T) -> R) -> R {
+    let mut acc: R = init;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            acc = f(acc, value);
+            resume(());
+        }
+    };
+    acc
+}
+
+/// Execute action for each element
+fn for_each<T>(stream: fn() / {Emit<T>}, action: fn(T) -> ()) {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            action(value);
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Row-Polymorphic Operators (preserve additional effects)
+// -----------------------------------------------------------------------------
+
+/// Map that preserves additional effects
+fn map_poly<T, U, E>(stream: fn() / {Emit<T> | E}, f: fn(T) -> U) / {Emit<U> | E} {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            perform Emit.emit(f(value));
+            resume(());
+        }
+    };
+}
+
+/// Filter that preserves additional effects
+fn filter_poly<T, E>(stream: fn() / {Emit<T> | E}, pred: fn(T) -> bool) / {Emit<T> | E} {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            if pred(value) {
+                perform Emit.emit(value);
+            }
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Composition Examples
+// -----------------------------------------------------------------------------
+
+/// Sum of squares of even numbers from 1 to n
+fn sum_even_squares(n: i32) -> i64 {
+    sum(|| / {Emit<i32>} {
+        map(|| / {Emit<i32>} {
+            filter(|| / {Emit<i32>} {
+                range(1, n + 1);
+            }, |x: i32| -> bool { x % 2 == 0 });
+        }, |x: i32| -> i32 { x * x });
+    })
+}
+
+/// Count primes up to n
+fn is_prime(n: i32) -> bool {
+    if n < 2 { return false; }
+    if n == 2 { return true; }
+    if n % 2 == 0 { return false; }
+    let mut d: i32 = 3;
+    while d * d <= n {
+        if n % d == 0 { return false; }
+        d = d + 2;
+    }
+    true
+}
+
+fn count_primes(n: i32) -> i64 {
+    count(|| / {Emit<i32>} {
+        filter(|| / {Emit<i32>} {
+            range(2, n + 1);
+        }, is_prime);
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
+
+fn main() -> i32 {
+    // Test 1: sum of 1..11 = 55
+    let s1: i64 = sum(|| / {Emit<i32>} { range(1, 11); });
+    if s1 != 55 { return 1; }
+
+    // Test 2: sum of squares of evens from 1..11 = 4+16+36+64+100 = 220
+    let s2: i64 = sum_even_squares(10);
+    if s2 != 220 { return 2; }
+
+    // Test 3: take first 5 from range = 1+2+3+4+5 = 15
+    let s3: i64 = sum(|| / {Emit<i32>} { take(|| / {Emit<i32>} { range(1, 100); }, 5); });
+    if s3 != 15 { return 3; }
+
+    // Test 4: count of primes up to 100 = 25
+    let c1: i64 = count_primes(100);
+    if c1 != 25 { return 4; }
+
+    0  // All tests passed!
+}

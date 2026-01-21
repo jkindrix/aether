@@ -1,0 +1,427 @@
+// =============================================================================
+// Aether Example: Concurrent Stream Pipeline
+// =============================================================================
+//
+// Demonstrates parallel stream processing using Blood's fiber-based
+// concurrency. Shows fan-out/fan-in patterns, parallel map, and
+// channel-based communication between processing stages.
+//
+
+// -----------------------------------------------------------------------------
+// Effect Declarations
+// -----------------------------------------------------------------------------
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+effect Fiber {
+    op spawn(task_id: i32) -> i32;
+    op current() -> i32;
+    op yield_fiber() -> ();
+    op sleep(duration_ms: i32) -> ();
+}
+
+effect Channel<T> {
+    op create(capacity: i32) -> i32;
+    op send(channel_id: i32, value: T) -> ();
+    op recv(channel_id: i32) -> T;
+    op try_recv(channel_id: i32) -> Option<T>;
+    op close(channel_id: i32) -> ();
+}
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+// -----------------------------------------------------------------------------
+// Data Types for Pipeline
+// -----------------------------------------------------------------------------
+
+/// A sensor reading with ID and value
+struct SensorReading {
+    sensor_id: i32,
+    timestamp: i64,
+    value: i32,
+}
+
+/// Processed result after transformation
+struct ProcessedReading {
+    sensor_id: i32,
+    original_value: i32,
+    normalized_value: i32,
+    classification: i32,  // 0=normal, 1=warning, 2=critical
+}
+
+/// Aggregated statistics per sensor
+struct SensorStats {
+    sensor_id: i32,
+    reading_count: i64,
+    sum: i64,
+    min: i32,
+    max: i32,
+}
+
+// -----------------------------------------------------------------------------
+// Source: Simulated Sensor Data
+// -----------------------------------------------------------------------------
+
+/// Generate simulated sensor readings
+fn sensor_source(
+    num_sensors: i32,
+    readings_per_sensor: i32
+) / {Emit<SensorReading>} {
+    let mut sensor: i32 = 0;
+    while sensor < num_sensors {
+        let mut reading: i32 = 0;
+        while reading < readings_per_sensor {
+            // Simulate sensor value with some variation
+            let base_value: i32 = 50 + (sensor * 10);
+            let variation: i32 = (reading * 7 + sensor * 13) % 40 - 20;
+            let value: i32 = base_value + variation;
+
+            perform Emit.emit(SensorReading {
+                sensor_id: sensor,
+                timestamp: (sensor * 1000 + reading) as i64,
+                value: value,
+            });
+
+            reading = reading + 1;
+        }
+        sensor = sensor + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Stage 1: Normalization (Parallel)
+// -----------------------------------------------------------------------------
+
+/// Normalize a reading to 0-100 scale
+fn normalize(reading: SensorReading) -> ProcessedReading {
+    // Assume raw values are in range 0-150
+    let normalized: i32 = if reading.value < 0 {
+        0
+    } else if reading.value > 100 {
+        100
+    } else {
+        reading.value
+    };
+
+    // Classify based on value
+    let classification: i32 = if normalized < 30 {
+        2  // Critical (too low)
+    } else if normalized > 80 {
+        2  // Critical (too high)
+    } else if normalized < 40 || normalized > 70 {
+        1  // Warning
+    } else {
+        0  // Normal
+    };
+
+    ProcessedReading {
+        sensor_id: reading.sensor_id,
+        original_value: reading.value,
+        normalized_value: normalized,
+        classification: classification,
+    }
+}
+
+/// Parallel normalization stage
+fn parallel_normalize(
+    stream: fn() / {Emit<SensorReading>},
+    num_workers: i32
+) / {Emit<ProcessedReading>, Fiber, Channel<SensorReading>, Channel<ProcessedReading>} {
+    // Create work distribution and result collection channels
+    let work_chan: i32 = perform Channel.create(256);
+    let result_chan: i32 = perform Channel.create(256);
+
+    // Count total readings for synchronization
+    let mut total_readings: i64 = 0;
+
+    // Distribute work to channel
+    handle stream() {
+        Emit.emit(reading) => {
+            perform Channel.send(work_chan, reading);
+            total_readings = total_readings + 1;
+            resume(());
+        }
+    };
+    perform Channel.close(work_chan);
+
+    // Spawn worker fibers
+    let mut worker: i32 = 0;
+    while worker < num_workers {
+        let worker_id: i32 = perform Fiber.spawn(worker);
+        // Each worker would run: worker_normalize_loop(worker_id, work_chan, result_chan)
+        worker = worker + 1;
+    }
+
+    // Collect results
+    let mut collected: i64 = 0;
+    while collected < total_readings {
+        let result: ProcessedReading = perform Channel.recv(result_chan);
+        perform Emit.emit(result);
+        collected = collected + 1;
+    }
+}
+
+/// Worker fiber for normalization
+fn worker_normalize_loop(
+    worker_id: i32,
+    input_chan: i32,
+    output_chan: i32
+) / {Fiber, Channel<SensorReading>, Channel<ProcessedReading>} {
+    loop {
+        let maybe_reading: Option<SensorReading> = perform Channel.try_recv(input_chan);
+        match maybe_reading {
+            Option::Some(reading) => {
+                let processed: ProcessedReading = normalize(reading);
+                perform Channel.send(output_chan, processed);
+            },
+            Option::None => {
+                // Channel might be empty or closed
+                perform Fiber.yield_fiber();
+            },
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Stage 2: Filtering (Critical Alerts)
+// -----------------------------------------------------------------------------
+
+/// Filter for critical readings only
+fn filter_critical(
+    stream: fn() / {Emit<ProcessedReading>}
+) / {Emit<ProcessedReading>} {
+    handle stream() {
+        Emit.emit(reading) => {
+            if reading.classification == 2 {
+                perform Emit.emit(reading);
+            }
+            resume(());
+        }
+    };
+}
+
+/// Filter for warnings and critical
+fn filter_alerts(
+    stream: fn() / {Emit<ProcessedReading>}
+) / {Emit<ProcessedReading>} {
+    handle stream() {
+        Emit.emit(reading) => {
+            if reading.classification >= 1 {
+                perform Emit.emit(reading);
+            }
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Stage 3: Aggregation by Sensor
+// -----------------------------------------------------------------------------
+
+/// Aggregate readings by sensor ID
+/// Returns stats for each sensor when stream ends
+fn aggregate_by_sensor(
+    stream: fn() / {Emit<ProcessedReading>}
+) / {Emit<SensorStats>} {
+    // Simple aggregation for up to 16 sensors
+    let mut counts: [i64; 16] = [0; 16];
+    let mut sums: [i64; 16] = [0; 16];
+    let mut mins: [i32; 16] = [2147483647; 16];
+    let mut maxs: [i32; 16] = [-2147483648; 16];
+
+    handle stream() {
+        Emit.emit(reading) => {
+            let idx: i32 = reading.sensor_id;
+            if idx >= 0 && idx < 16 {
+                counts[idx] = counts[idx] + 1;
+                sums[idx] = sums[idx] + (reading.normalized_value as i64);
+                if reading.normalized_value < mins[idx] {
+                    mins[idx] = reading.normalized_value;
+                }
+                if reading.normalized_value > maxs[idx] {
+                    maxs[idx] = reading.normalized_value;
+                }
+            }
+            resume(());
+        }
+    };
+
+    // Emit stats for each sensor that had readings
+    let mut sensor: i32 = 0;
+    while sensor < 16 {
+        if counts[sensor] > 0 {
+            perform Emit.emit(SensorStats {
+                sensor_id: sensor,
+                reading_count: counts[sensor],
+                sum: sums[sensor],
+                min: mins[sensor],
+                max: maxs[sensor],
+            });
+        }
+        sensor = sensor + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sink: Collect Statistics
+// -----------------------------------------------------------------------------
+
+/// Collect all sensor stats into a summary
+struct PipelineSummary {
+    total_sensors: i32,
+    total_readings: i64,
+    global_min: i32,
+    global_max: i32,
+}
+
+fn collect_summary(
+    stream: fn() / {Emit<SensorStats>}
+) -> PipelineSummary {
+    let mut summary: PipelineSummary = PipelineSummary {
+        total_sensors: 0,
+        total_readings: 0,
+        global_min: 2147483647,
+        global_max: -2147483648,
+    };
+
+    handle stream() {
+        Emit.emit(stats) => {
+            summary.total_sensors = summary.total_sensors + 1;
+            summary.total_readings = summary.total_readings + stats.reading_count;
+            if stats.min < summary.global_min {
+                summary.global_min = stats.min;
+            }
+            if stats.max > summary.global_max {
+                summary.global_max = stats.max;
+            }
+            resume(());
+        }
+    };
+
+    summary
+}
+
+// -----------------------------------------------------------------------------
+// Fan-Out / Fan-In Pattern
+// -----------------------------------------------------------------------------
+
+/// Split stream to multiple processing paths
+fn fan_out_alerts(
+    stream: fn() / {Emit<ProcessedReading>}
+) / {Emit<ProcessedReading>, Emit<ProcessedReading>} {
+    // This demonstrates sending to multiple downstream handlers
+    // In practice, would use channels for true parallel fan-out
+    handle stream() {
+        Emit.emit(reading) => {
+            // Send to both paths (normal path and alert path)
+            perform Emit.emit(reading);
+            if reading.classification >= 1 {
+                // Also emit to alert-specific handler
+                // (Would use separate effect or channel in real impl)
+            }
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Complete Pipeline Example
+// -----------------------------------------------------------------------------
+
+/// Run the complete concurrent processing pipeline
+fn run_sensor_pipeline() -> PipelineSummary / {Fiber, Channel<SensorReading>, Channel<ProcessedReading>} {
+    // Pipeline:
+    // sensor_source(4 sensors, 100 readings each)
+    //   -> parallel_normalize(4 workers)
+    //   -> filter_alerts
+    //   -> aggregate_by_sensor
+    //   -> collect_summary
+
+    collect_summary(|| {
+        aggregate_by_sensor(|| {
+            filter_alerts(|| {
+                parallel_normalize(|| {
+                    sensor_source(4, 100);
+                }, 4);
+            });
+        });
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Simpler Sequential Version for Comparison
+// -----------------------------------------------------------------------------
+
+/// Sequential (non-parallel) version of the pipeline
+fn run_sensor_pipeline_sequential() -> PipelineSummary {
+    collect_summary(|| {
+        aggregate_by_sensor(|| {
+            filter_alerts(|| {
+                // Sequential normalization
+                handle sensor_source(4, 100) {
+                    Emit.emit(reading) => {
+                        let processed: ProcessedReading = normalize(reading);
+                        perform Emit.emit(processed);
+                        resume(());
+                    }
+                };
+            });
+        });
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Main Entry Point
+// -----------------------------------------------------------------------------
+
+fn main() / {Fiber, Channel<SensorReading>, Channel<ProcessedReading>} {
+    println_str("=== Aether Concurrent Pipeline Demo ===");
+    println_str("");
+
+    // Run sequential version
+    println_str("Running sequential pipeline...");
+    let seq_summary: PipelineSummary = run_sensor_pipeline_sequential();
+    println_str("Sequential results:");
+    print_summary(seq_summary);
+
+    println_str("");
+
+    // Run concurrent version
+    println_str("Running concurrent pipeline (4 workers)...");
+    let par_summary: PipelineSummary = run_sensor_pipeline();
+    println_str("Concurrent results:");
+    print_summary(par_summary);
+
+    println_str("");
+    println_str("Pipeline demo complete!");
+}
+
+/// Print pipeline summary
+fn print_summary(summary: PipelineSummary) {
+    println_str("  Total sensors:");
+    println_int(summary.total_sensors);
+    println_str("  Total readings:");
+    println_i64(summary.total_readings);
+    println_str("  Global min:");
+    println_int(summary.global_min);
+    println_str("  Global max:");
+    println_int(summary.global_max);
+}
+
+// Placeholder I/O functions
+fn println_str(s: &str) {
+    // Output string
+}
+
+fn println_int(n: i32) {
+    // Output integer
+}
+
+fn println_i64(n: i64) {
+    // Output i64
+}

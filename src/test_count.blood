@@ -1,0 +1,32 @@
+// Test count operator (single generic fn param)
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+fn count<T>(stream: fn() / {Emit<T>}) -> i64 {
+    let mut n: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(_value) => {
+            n = n + 1;
+            resume(());
+        }
+    };
+    n
+}
+
+fn main() -> i32 {
+    // count of 1..11 = 10
+    let result: i64 = count(|| / {Emit<i32>} { range(1, 11); });
+    if result == 10 { return 0; }
+    (result as i32)
+}

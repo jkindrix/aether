@@ -1,0 +1,29 @@
+// Test: generic function where T only in params WITH effects
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn count_stream<T>(stream: fn() / {Emit<T>}) -> i64 {
+    let mut n: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(_value) => {
+            n = n + 1;
+            resume(());
+        }
+    };
+    n
+}
+
+fn emit_numbers() / {Emit<i32>} {
+    perform Emit.emit(1);
+    perform Emit.emit(2);
+    perform Emit.emit(3);
+}
+
+fn main() -> i32 {
+    let result: i64 = count_stream(emit_numbers);
+    if result == 3 { return 0; }
+    (result as i32)
+}

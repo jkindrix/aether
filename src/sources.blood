@@ -1,0 +1,230 @@
+// =============================================================================
+// Aether: Stream Sources
+// =============================================================================
+//
+// Sources are the entry points for stream pipelines. They produce values
+// using the Emit<T> effect, which handlers transform and consume.
+//
+
+// -----------------------------------------------------------------------------
+// Range Sources
+// -----------------------------------------------------------------------------
+
+/// Emit integers from start (inclusive) to end (exclusive).
+/// Uses the Emit effect to yield values one at a time.
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+/// Emit integers from 0 to n-1.
+fn range_n(n: i32) / {Emit<i32>} {
+    range(0, n);
+}
+
+/// Emit integers from start with given step until reaching or exceeding end.
+fn range_step(start: i32, end: i32, step: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    if step > 0 {
+        while i < end {
+            perform Emit.emit(i);
+            i = i + step;
+        }
+    } else if step < 0 {
+        while i > end {
+            perform Emit.emit(i);
+            i = i + step;
+        }
+    }
+    // step == 0 produces no values (prevents infinite loop)
+}
+
+// -----------------------------------------------------------------------------
+// Collection Sources
+// -----------------------------------------------------------------------------
+
+/// Emit a single value.
+fn emit_one<T>(value: T) / {Emit<T>} {
+    perform Emit.emit(value);
+}
+
+/// Emit two values in sequence.
+fn emit_pair<T>(a: T, b: T) / {Emit<T>} {
+    perform Emit.emit(a);
+    perform Emit.emit(b);
+}
+
+/// Emit three values in sequence.
+fn emit_triple<T>(a: T, b: T, c: T) / {Emit<T>} {
+    perform Emit.emit(a);
+    perform Emit.emit(b);
+    perform Emit.emit(c);
+}
+
+/// Emit nothing (empty stream).
+fn empty<T>() / {Emit<T>} {
+    // No operations - stream immediately completes
+}
+
+// -----------------------------------------------------------------------------
+// Repetition Sources
+// -----------------------------------------------------------------------------
+
+/// Emit the same value n times.
+fn repeat_n<T>(value: T, count: i32) / {Emit<T>} {
+    let mut i: i32 = 0;
+    while i < count {
+        perform Emit.emit(value);
+        i = i + 1;
+    }
+}
+
+/// Emit values from a generator function n times.
+/// The generator receives the current index.
+fn generate<T>(count: i32, generator: fn(i32) -> T) / {Emit<T>} {
+    let mut i: i32 = 0;
+    while i < count {
+        let value: T = generator(i);
+        perform Emit.emit(value);
+        i = i + 1;
+    }
+}
+
+/// Emit values from a stateful generator.
+/// Generator receives current state and returns (value, next_state).
+fn unfold<T, S>(initial_state: S, count: i32, generator: fn(S) -> (T, S)) / {Emit<T>} {
+    let mut state: S = initial_state;
+    let mut i: i32 = 0;
+    while i < count {
+        let result: (T, S) = generator(state);
+        perform Emit.emit(result.0);
+        state = result.1;
+        i = i + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Mathematical Sequences
+// -----------------------------------------------------------------------------
+
+/// Emit the first n Fibonacci numbers.
+fn fibonacci(n: i32) / {Emit<i64>} {
+    if n <= 0 {
+        return;
+    }
+
+    let mut a: i64 = 0;
+    let mut b: i64 = 1;
+    let mut i: i32 = 0;
+
+    while i < n {
+        perform Emit.emit(a);
+        let next: i64 = a + b;
+        a = b;
+        b = next;
+        i = i + 1;
+    }
+}
+
+/// Emit prime numbers up to limit using Sieve of Eratosthenes.
+/// Demonstrates stateful stream generation.
+fn primes_up_to(limit: i32) / {Emit<i32>} {
+    if limit < 2 {
+        return;
+    }
+
+    perform Emit.emit(2);
+
+    let mut candidate: i32 = 3;
+    while candidate <= limit {
+        let mut is_prime: bool = true;
+        let mut divisor: i32 = 3;
+
+        // Check divisibility by odd numbers up to sqrt(candidate)
+        while divisor * divisor <= candidate {
+            if candidate % divisor == 0 {
+                is_prime = false;
+                break;
+            }
+            divisor = divisor + 2;
+        }
+
+        if is_prime {
+            perform Emit.emit(candidate);
+        }
+        candidate = candidate + 2;
+    }
+}
+
+/// Emit the first n triangular numbers (1, 3, 6, 10, 15, ...).
+fn triangular(n: i32) / {Emit<i32>} {
+    let mut sum: i32 = 0;
+    let mut i: i32 = 1;
+    while i <= n {
+        sum = sum + i;
+        perform Emit.emit(sum);
+        i = i + 1;
+    }
+}
+
+/// Emit the first n square numbers (1, 4, 9, 16, 25, ...).
+fn squares(n: i32) / {Emit<i32>} {
+    let mut i: i32 = 1;
+    while i <= n {
+        perform Emit.emit(i * i);
+        i = i + 1;
+    }
+}
+
+/// Emit the first n powers of base (base^0, base^1, base^2, ...).
+fn powers(base: i32, n: i32) / {Emit<i64>} {
+    let mut power: i64 = 1;
+    let base64: i64 = base as i64;
+    let mut i: i32 = 0;
+    while i < n {
+        perform Emit.emit(power);
+        power = power * base64;
+        i = i + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Interleaving Sources
+// -----------------------------------------------------------------------------
+
+/// Emit values alternating between two sub-streams.
+/// Example: interleave(range(1,4), range(10,13)) -> 1, 10, 2, 11, 3, 12
+fn interleave_ranges(start1: i32, end1: i32, start2: i32, end2: i32) / {Emit<i32>} {
+    let mut i1: i32 = start1;
+    let mut i2: i32 = start2;
+
+    while i1 < end1 || i2 < end2 {
+        if i1 < end1 {
+            perform Emit.emit(i1);
+            i1 = i1 + 1;
+        }
+        if i2 < end2 {
+            perform Emit.emit(i2);
+            i2 = i2 + 1;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Cycle Sources
+// -----------------------------------------------------------------------------
+
+/// Emit values cycling through a pattern n times.
+/// cycle_triple(1, 2, 3, 2) -> 1, 2, 3, 1, 2, 3
+fn cycle_triple(a: i32, b: i32, c: i32, cycles: i32) / {Emit<i32>} {
+    let mut i: i32 = 0;
+    while i < cycles {
+        perform Emit.emit(a);
+        perform Emit.emit(b);
+        perform Emit.emit(c);
+        i = i + 1;
+    }
+}

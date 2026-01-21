@@ -1,0 +1,45 @@
+// Test: closure calls function that uses handler
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn emit_123() / {Emit<i32>} {
+    perform Emit.emit(1);
+    perform Emit.emit(2);
+    perform Emit.emit(3);
+}
+
+fn square(x: i32) -> i32 {
+    x * x
+}
+
+// This function uses a handler internally
+fn map_and_sum() -> i32 {
+    let mut total: i32 = 0;
+    try {
+        try { emit_123(); }
+        with {
+            Emit.emit(value) => {
+                perform Emit.emit(square(value));
+                resume(());
+            }
+        };
+    } with {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+    total
+}
+
+fn run(f: fn() -> i32) -> i32 {
+    f()
+}
+
+fn main() -> i32 {
+    // Closure that calls function with internal handler
+    run(|| -> i32 { map_and_sum() })
+    // Should be 1 + 4 + 9 = 14
+}

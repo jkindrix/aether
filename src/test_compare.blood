@@ -1,0 +1,16 @@
+// Test i64 comparison
+
+fn main() -> i32 {
+    let a: i64 = 0;
+    let b: i64 = 220;
+
+    if a == b {
+        return 1;  // BUG: 0 == 220 is true?!
+    }
+
+    if a == 0 {
+        return 2;  // a is 0, comparison works
+    }
+
+    3
+}

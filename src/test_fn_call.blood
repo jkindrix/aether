@@ -1,0 +1,21 @@
+// Test: function pointer call behavior
+
+fn call_it(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn double(x: i32) -> i32 {
+    x * 2
+}
+
+fn main() -> i32 {
+    // Direct call works?
+    let d1: i32 = double(5);
+    if d1 != 10 { return d1; }
+
+    // Through function?
+    let d2: i32 = call_it(double, 7);
+    if d2 != 14 { return d2 + 100; }
+
+    0  // Pass
+}

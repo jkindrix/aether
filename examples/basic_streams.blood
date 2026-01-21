@@ -1,0 +1,366 @@
+// =============================================================================
+// Aether Example: Basic Stream Operations
+// =============================================================================
+//
+// Demonstrates fundamental stream creation, transformation, and consumption
+// using Blood's algebraic effects.
+//
+
+// Import core definitions (in practice, would use module system)
+// For now, these are defined inline for self-containment
+
+/// Core emit effect
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+/// Option type
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+// -----------------------------------------------------------------------------
+// Example 1: Simple Range Processing
+// -----------------------------------------------------------------------------
+
+/// Create a range of integers
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+/// Square each element
+fn square(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
+    handle stream() {
+        Emit.emit(x) => {
+            perform Emit.emit(x * x);
+            resume(());
+        }
+    };
+}
+
+/// Keep only even numbers
+fn filter_even(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
+    handle stream() {
+        Emit.emit(x) => {
+            if x % 2 == 0 {
+                perform Emit.emit(x);
+            }
+            resume(());
+        }
+    };
+}
+
+/// Sum all elements (sink)
+fn sum(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut total: i64 = 0;
+    handle stream() {
+        Emit.emit(x) => {
+            total = total + (x as i64);
+            resume(());
+        }
+    };
+    total
+}
+
+/// Example 1: Sum of squares of even numbers from 1 to 10
+fn example_sum_even_squares() -> i64 {
+    // Pipeline: range(1, 11) -> filter_even -> square -> sum
+    // Result: 4 + 16 + 36 + 64 + 100 = 220
+
+    sum(|| {
+        square(|| {
+            filter_even(|| {
+                range(1, 11);
+            });
+        });
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Example 2: Collecting Elements
+// -----------------------------------------------------------------------------
+
+/// Count elements in a stream
+fn count(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut n: i64 = 0;
+    handle stream() {
+        Emit.emit(_x) => {
+            n = n + 1;
+            resume(());
+        }
+    };
+    n
+}
+
+/// Find maximum element
+fn maximum(stream: fn() / {Emit<i32>}) -> Option<i32> {
+    let mut max: Option<i32> = Option::None;
+    handle stream() {
+        Emit.emit(x) => {
+            match max {
+                Option::None => {
+                    max = Option::Some(x);
+                },
+                Option::Some(m) => {
+                    if x > m {
+                        max = Option::Some(x);
+                    }
+                },
+            }
+            resume(());
+        }
+    };
+    max
+}
+
+/// Example 2: Count primes and find max
+fn is_prime(n: i32) -> bool {
+    if n < 2 {
+        return false;
+    }
+    if n == 2 {
+        return true;
+    }
+    if n % 2 == 0 {
+        return false;
+    }
+    let mut d: i32 = 3;
+    while d * d <= n {
+        if n % d == 0 {
+            return false;
+        }
+        d = d + 2;
+    }
+    true
+}
+
+fn filter_primes(stream: fn() / {Emit<i32>}) / {Emit<i32>} {
+    handle stream() {
+        Emit.emit(x) => {
+            if is_prime(x) {
+                perform Emit.emit(x);
+            }
+            resume(());
+        }
+    };
+}
+
+fn example_count_primes() -> i64 {
+    // Count primes from 1 to 100
+    // Primes: 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97
+    // = 25 primes
+
+    count(|| {
+        filter_primes(|| {
+            range(1, 101);
+        });
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Example 3: Chaining Transformations
+// -----------------------------------------------------------------------------
+
+/// Add a constant to each element
+fn add_const(stream: fn() / {Emit<i32>}, c: i32) / {Emit<i32>} {
+    handle stream() {
+        Emit.emit(x) => {
+            perform Emit.emit(x + c);
+            resume(());
+        }
+    };
+}
+
+/// Multiply each element
+fn multiply(stream: fn() / {Emit<i32>}, factor: i32) / {Emit<i32>} {
+    handle stream() {
+        Emit.emit(x) => {
+            perform Emit.emit(x * factor);
+            resume(());
+        }
+    };
+}
+
+/// Take first n elements
+fn take(stream: fn() / {Emit<i32>}, n: i64) / {Emit<i32>} {
+    let mut count: i64 = 0;
+    handle stream() {
+        Emit.emit(x) => {
+            if count < n {
+                perform Emit.emit(x);
+                count = count + 1;
+                resume(());
+            }
+            // Don't resume after n elements - early termination
+        }
+    };
+}
+
+/// Drop first n elements
+fn drop(stream: fn() / {Emit<i32>}, n: i64) / {Emit<i32>} {
+    let mut count: i64 = 0;
+    handle stream() {
+        Emit.emit(x) => {
+            if count >= n {
+                perform Emit.emit(x);
+            }
+            count = count + 1;
+            resume(());
+        }
+    };
+}
+
+/// Example 3: Complex pipeline
+fn example_complex_pipeline() -> i64 {
+    // range(1, 20) -> drop(5) -> take(10) -> multiply(2) -> add_const(1) -> sum
+    // Elements: 6,7,8,9,10,11,12,13,14,15
+    // After multiply(2): 12,14,16,18,20,22,24,26,28,30
+    // After add_const(1): 13,15,17,19,21,23,25,27,29,31
+    // Sum: 220
+
+    sum(|| {
+        add_const(|| {
+            multiply(|| {
+                take(|| {
+                    drop(|| {
+                        range(1, 20);
+                    }, 5);
+                }, 10);
+            }, 2);
+        }, 1);
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Example 4: Running Accumulations (Scan)
+// -----------------------------------------------------------------------------
+
+/// Running sum - emit cumulative sums
+fn running_sum(stream: fn() / {Emit<i32>}) / {Emit<i64>} {
+    let mut total: i64 = 0;
+    handle stream() {
+        Emit.emit(x) => {
+            total = total + (x as i64);
+            perform Emit.emit(total);
+            resume(());
+        }
+    };
+}
+
+/// Collect last emitted value
+fn last(stream: fn() / {Emit<i64>}) -> Option<i64> {
+    let mut result: Option<i64> = Option::None;
+    handle stream() {
+        Emit.emit(x) => {
+            result = Option::Some(x);
+            resume(());
+        }
+    };
+    result
+}
+
+/// Example 4: Running sum produces cumulative totals
+fn example_running_sum() -> i64 {
+    // range(1, 6) produces: 1, 2, 3, 4, 5
+    // running_sum produces: 1, 3, 6, 10, 15
+    // last returns: 15
+
+    match last(|| {
+        running_sum(|| {
+            range(1, 6);
+        });
+    }) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Example 5: Multiple Consumers
+// -----------------------------------------------------------------------------
+
+/// Fork stream to compute both sum and count in one pass
+struct SumAndCount {
+    sum: i64,
+    count: i64,
+}
+
+fn sum_and_count(stream: fn() / {Emit<i32>}) -> SumAndCount {
+    let mut total: i64 = 0;
+    let mut n: i64 = 0;
+
+    handle stream() {
+        Emit.emit(x) => {
+            total = total + (x as i64);
+            n = n + 1;
+            resume(());
+        }
+    };
+
+    SumAndCount { sum: total, count: n }
+}
+
+fn example_sum_and_count() -> i64 {
+    // Compute average of 1..11 (should be 5)
+    let result: SumAndCount = sum_and_count(|| {
+        range(1, 11);
+    });
+
+    // Average = sum / count = 55 / 10 = 5
+    if result.count > 0 {
+        result.sum / result.count
+    } else {
+        0
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Main: Run All Examples
+// -----------------------------------------------------------------------------
+
+fn main() {
+    // Example 1: Sum of squares of even numbers
+    let result1: i64 = example_sum_even_squares();
+    println_str("Example 1 - Sum of even squares (1-10):");
+    println_int(result1 as i32);  // Expected: 220
+
+    // Example 2: Count primes
+    let result2: i64 = example_count_primes();
+    println_str("Example 2 - Count of primes (1-100):");
+    println_int(result2 as i32);  // Expected: 25
+
+    // Example 3: Complex pipeline
+    let result3: i64 = example_complex_pipeline();
+    println_str("Example 3 - Complex pipeline result:");
+    println_int(result3 as i32);  // Expected: 220
+
+    // Example 4: Running sum
+    let result4: i64 = example_running_sum();
+    println_str("Example 4 - Running sum final value:");
+    println_int(result4 as i32);  // Expected: 15
+
+    // Example 5: Average calculation
+    let result5: i64 = example_sum_and_count();
+    println_str("Example 5 - Average of 1-10:");
+    println_int(result5 as i32);  // Expected: 5
+
+    println_str("All examples completed!");
+}
+
+// Placeholder print functions (would use Blood's IO effects)
+fn println_str(s: &str) / {IO} {
+    // Uses Blood's IO effect for console output
+}
+
+fn println_int(n: i32) / {IO} {
+    // Uses Blood's IO effect for console output
+}
+
+effect IO {
+    op print(msg: i32) -> ();
+}

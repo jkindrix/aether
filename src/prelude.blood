@@ -1,0 +1,346 @@
+// =============================================================================
+// Aether Prelude: Unified Import Module
+// =============================================================================
+//
+// This file provides a single import point for all Aether types and effects.
+// When Blood's module system is complete, users would write:
+//
+//     use aether::prelude::*;
+//
+// Currently, Blood requires explicit definitions. This file serves as:
+// 1. Documentation of the public API
+// 2. A template for copy-paste into examples
+// 3. A preview of the module structure
+//
+
+// =============================================================================
+// CORE EFFECTS
+// =============================================================================
+
+/// Push-based stream emission. The fundamental streaming primitive.
+/// Sources produce values by performing emit(), handlers transform or consume.
+effect Emit<T> {
+    /// Emit a single value to the handler. Control returns when handler resumes.
+    op emit(value: T) -> ();
+}
+
+/// Pull-based stream consumption. Enables backpressure by inverting control.
+/// Consumer requests values on demand rather than being pushed to.
+effect Pull<T> {
+    /// Request the next value. Returns None when stream is exhausted.
+    op pull() -> Option<T>;
+}
+
+/// Stateful accumulation for running computations.
+/// Used by scan, running_sum, and other stateful operators.
+effect Accumulate<S> {
+    /// Get current accumulator state.
+    op get_state() -> S;
+    /// Replace accumulator state.
+    op set_state(new_state: S) -> ();
+    /// Atomically modify state (get + transform + set).
+    op modify_state(delta: S) -> S;
+}
+
+/// Typed error handling within streams.
+/// Handlers can recover, propagate, or transform errors.
+effect StreamError<E> {
+    /// Signal a fatal error. Handler must handle or propagate.
+    op fail(error: E) -> never;
+    /// Signal a non-fatal warning. Handler may log or ignore.
+    op warn(error: E) -> ();
+}
+
+/// Stream lifecycle events for resource management.
+effect Lifecycle {
+    /// Called when stream processing begins.
+    op on_start() -> ();
+    /// Called when stream completes normally.
+    op on_complete() -> ();
+    /// Called when stream is cancelled or fails.
+    op on_cancel() -> ();
+}
+
+// =============================================================================
+// CONCURRENCY EFFECTS (Blood Built-ins)
+// =============================================================================
+
+/// Lightweight fiber-based concurrency.
+effect Fiber {
+    /// Spawn a new fiber. Returns fiber ID.
+    op spawn(task_id: i32) -> i32;
+    /// Get current fiber's ID.
+    op current() -> i32;
+    /// Yield control to scheduler.
+    op yield_fiber() -> ();
+    /// Sleep for given milliseconds.
+    op sleep(duration_ms: i32) -> ();
+}
+
+/// Channel-based communication between fibers.
+/// Note: Channels are identified by i32 handles. Future versions may use
+/// typed handles (ChannelHandle<T>) when Blood supports this pattern.
+effect Channel<T> {
+    /// Create bounded channel with given capacity.
+    op create(capacity: i32) -> i32;
+    /// Send value (blocks if full).
+    op send(channel_id: i32, value: T) -> ();
+    /// Receive value (blocks if empty).
+    op recv(channel_id: i32) -> T;
+    /// Try send without blocking.
+    op try_send(channel_id: i32, value: T) -> bool;
+    /// Try receive without blocking.
+    op try_recv(channel_id: i32) -> Option<T>;
+    /// Close channel, signaling completion.
+    op close(channel_id: i32) -> ();
+}
+
+// =============================================================================
+// BACKPRESSURE EFFECTS
+// =============================================================================
+
+/// Flow control state management.
+effect Backpressure {
+    /// Check if producer should pause.
+    op should_pause() -> bool;
+    /// Notify element emitted.
+    op on_emit() -> ();
+    /// Notify element consumed.
+    op on_consume() -> ();
+    /// Get current buffer fill level.
+    op buffer_level() -> i32;
+    /// Block until buffer drains below low watermark.
+    op wait_for_drain() -> ();
+}
+
+// =============================================================================
+// CORE TYPES
+// =============================================================================
+
+/// Optional value - present or absent.
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+/// Result of fallible operation.
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+// =============================================================================
+// STREAM CONFIGURATION
+// =============================================================================
+
+/// Parallel processing configuration.
+struct ParallelConfig {
+    /// Number of worker fibers (1-32 typical).
+    num_workers: i32,
+    /// Inter-stage buffer capacity.
+    buffer_size: i32,
+    /// Work distribution batch size.
+    batch_size: i32,
+}
+
+/// Backpressure strategy when buffers fill.
+enum OverflowStrategy {
+    /// Block producer until space available.
+    Block,
+    /// Drop newest elements on overflow.
+    DropNewest,
+    /// Drop oldest elements on overflow.
+    DropOldest,
+    /// Signal error to producer.
+    Error,
+    /// Grow buffer dynamically (to max_capacity).
+    Expand,
+}
+
+/// Backpressure configuration.
+struct BackpressureConfig {
+    strategy: OverflowStrategy,
+    buffer_capacity: i32,
+    max_capacity: i32,
+    low_watermark: i32,
+    high_watermark: i32,
+}
+
+/// Windowing configuration.
+struct WindowConfig {
+    /// Window size in elements.
+    size: i64,
+    /// Slide amount between windows.
+    slide: i64,
+    /// Whether to emit partial final window.
+    emit_partial: bool,
+}
+
+// =============================================================================
+// STREAM STATISTICS
+// =============================================================================
+
+/// Runtime statistics for monitoring.
+struct StreamStats {
+    elements_processed: i64,
+    elements_dropped: i64,
+    errors_encountered: i64,
+    start_time: i64,
+    last_element_time: i64,
+}
+
+/// Backpressure statistics.
+struct BackpressureStats {
+    total_elements: i64,
+    dropped_elements: i64,
+    pause_count: i64,
+    total_pause_time: i64,
+    peak_buffer_level: i32,
+    current_level: i32,
+}
+
+// =============================================================================
+// ERROR TYPES
+// =============================================================================
+
+/// Common stream processing errors.
+enum StreamErrorKind {
+    SourceExhausted,
+    SinkRejected,
+    Timeout,
+    Overflow,
+    ProcessingError,
+    Cancelled,
+}
+
+// =============================================================================
+// OPTION UTILITIES
+// =============================================================================
+
+/// Check if option contains a value.
+fn is_some<T>(opt: Option<T>) -> bool {
+    match opt {
+        Option::Some(_) => true,
+        Option::None => false,
+    }
+}
+
+/// Check if option is empty.
+fn is_none<T>(opt: Option<T>) -> bool {
+    match opt {
+        Option::Some(_) => false,
+        Option::None => true,
+    }
+}
+
+/// Unwrap option or return default.
+fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
+    match opt {
+        Option::Some(v) => v,
+        Option::None => default,
+    }
+}
+
+// =============================================================================
+// CONFIGURATION CONSTRUCTORS
+// =============================================================================
+
+/// Default parallel configuration (4 workers, 256 buffer).
+fn default_parallel_config() -> ParallelConfig {
+    ParallelConfig {
+        num_workers: 4,
+        buffer_size: 256,
+        batch_size: 64,
+    }
+}
+
+/// Default backpressure configuration.
+fn default_backpressure_config() -> BackpressureConfig {
+    BackpressureConfig {
+        strategy: OverflowStrategy::Block,
+        buffer_capacity: 1024,
+        max_capacity: 65536,
+        low_watermark: 256,
+        high_watermark: 768,
+    }
+}
+
+/// Tumbling window (non-overlapping).
+fn tumbling_window(size: i64) -> WindowConfig {
+    WindowConfig { size: size, slide: size, emit_partial: true }
+}
+
+/// Sliding window (overlapping).
+fn sliding_window(size: i64, slide: i64) -> WindowConfig {
+    WindowConfig { size: size, slide: slide, emit_partial: true }
+}
+
+// =============================================================================
+// PUBLIC API SUMMARY
+// =============================================================================
+//
+// SOURCES (from sources.blood):
+//   range(start, end)          - Integer sequence
+//   range_n(n)                 - 0 to n-1
+//   range_step(start, end, s)  - With step
+//   emit_one(v), emit_pair(a,b), emit_triple(a,b,c)
+//   empty()                    - Empty stream
+//   repeat_n(v, n)             - Repeat value n times
+//   generate(n, f)             - Generate with function
+//   unfold(state, n, f)        - Stateful generation
+//   fibonacci(n)               - First n Fibonacci numbers
+//   primes_up_to(n)            - Primes up to n
+//   triangular(n), squares(n), powers(base, n)
+//
+// OPERATORS (from operators.blood):
+//   map(stream, f)             - Transform elements
+//   map_indexed(stream, f)     - Transform with index
+//   filter(stream, pred)       - Keep matching elements
+//   filter_not(stream, pred)   - Keep non-matching
+//   filter_map(stream, f)      - Filter and map in one pass
+//   take(stream, n)            - First n elements
+//   take_while(stream, pred)   - While predicate holds
+//   drop(stream, n)            - Skip first n
+//   drop_while(stream, pred)   - Skip while predicate holds
+//   step_by(stream, n)         - Every nth element
+//   scan(stream, init, f)      - Running accumulation
+//   running_sum(stream)        - Cumulative sums
+//   running_max(stream)        - Running maximum
+//   running_min(stream)        - Running minimum
+//   dedup(stream)              - Remove consecutive duplicates
+//   enumerate(stream)          - Pair with indices
+//   flat_map(stream, f)        - Map and flatten
+//   inspect(stream, f)         - Side-effect without modifying
+//
+// SINKS (from sinks.blood):
+//   count_sink(stream)         - Count elements
+//   count_if(stream, pred)     - Count matching
+//   sum_i32(stream), sum_i64   - Sum elements
+//   product_i32(stream)        - Product of elements
+//   max_i32(stream), min_i32   - Extrema
+//   average_i32(stream)        - Mean value
+//   fold(stream, init, f)      - General reduction
+//   all(stream, pred)          - All match predicate
+//   any(stream, pred)          - Any matches
+//   none(stream, pred)         - None match
+//   first(stream), last(stream), nth(stream, n)
+//   drain(stream)              - Consume and discard
+//   for_each(stream, f)        - Execute for each
+//
+// CONCURRENT (from concurrent.blood):
+//   parallel_map(stream, f, cfg)    - Multi-worker map
+//   parallel_filter(stream, p, cfg) - Multi-worker filter
+//   fan_out(stream, n, buf)         - Split to n consumers
+//   fan_in(channels, n)             - Merge n streams
+//   batch(stream, size)             - Batch elements
+//   rate_limit(stream, ms)          - Limit emission rate
+//   throttle(stream, ms)            - Delay between elements
+//
+// BACKPRESSURE (from backpressure.blood):
+//   buffer(stream, cfg)        - Add buffer with strategy
+//   buffer_n(stream, n)        - Simple bounded buffer
+//   conflate(stream)           - Keep only latest
+//   sample(stream, n)          - Sample every n elements
+//   windowed_sum(stream, cfg)  - Windowed aggregation
+//
+// =============================================================================

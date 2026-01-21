@@ -1,0 +1,355 @@
+// =============================================================================
+// Aether: Typed Channel Abstraction
+// =============================================================================
+//
+// This module provides type-safe channel handles that wrap the underlying
+// i32 channel IDs. This improves type safety by preventing accidental
+// cross-channel communication with mismatched types.
+//
+// Design Note: Blood's Channel<T> effect uses i32 IDs for runtime flexibility.
+// This wrapper adds compile-time type safety without runtime overhead.
+//
+
+// -----------------------------------------------------------------------------
+// Low-Level Channel Effect (Blood Built-in)
+// -----------------------------------------------------------------------------
+
+/// Blood's built-in channel effect operates on i32 IDs.
+/// This module wraps it with typed handles.
+effect RawChannel<T> {
+    op create(capacity: i32) -> i32;
+    op send(channel_id: i32, value: T) -> ();
+    op recv(channel_id: i32) -> T;
+    op try_send(channel_id: i32, value: T) -> bool;
+    op try_recv(channel_id: i32) -> Option<T>;
+    op close(channel_id: i32) -> ();
+}
+
+// -----------------------------------------------------------------------------
+// Typed Channel Handle
+// -----------------------------------------------------------------------------
+
+/// A type-safe handle to a channel carrying values of type T.
+/// The phantom type parameter ensures type safety at compile time.
+struct ChannelHandle<T> {
+    /// The underlying channel ID.
+    id: i32,
+    /// Capacity of the channel.
+    capacity: i32,
+    /// Whether the channel is closed.
+    closed: bool,
+}
+
+/// Sender half of a channel (for producer).
+struct Sender<T> {
+    channel: ChannelHandle<T>,
+}
+
+/// Receiver half of a channel (for consumer).
+struct Receiver<T> {
+    channel: ChannelHandle<T>,
+}
+
+/// A channel split into sender and receiver halves.
+struct ChannelPair<T> {
+    sender: Sender<T>,
+    receiver: Receiver<T>,
+}
+
+// -----------------------------------------------------------------------------
+// Channel Construction
+// -----------------------------------------------------------------------------
+
+/// Create a new bounded channel with typed handle.
+fn channel<T>(capacity: i32) -> ChannelHandle<T> / {RawChannel<T>} {
+    let id: i32 = perform RawChannel.create(capacity);
+    ChannelHandle {
+        id: id,
+        capacity: capacity,
+        closed: false,
+    }
+}
+
+/// Create a channel and split into sender/receiver pair.
+/// This pattern enables clear ownership: producer owns Sender, consumer owns Receiver.
+fn channel_pair<T>(capacity: i32) -> ChannelPair<T> / {RawChannel<T>} {
+    let handle: ChannelHandle<T> = channel(capacity);
+    ChannelPair {
+        sender: Sender { channel: handle },
+        receiver: Receiver { channel: handle },
+    }
+}
+
+/// Create an unbuffered (rendezvous) channel.
+/// Sender blocks until receiver is ready.
+fn rendezvous<T>() -> ChannelPair<T> / {RawChannel<T>} {
+    channel_pair(0)
+}
+
+/// Create a channel with default capacity (256).
+fn default_channel<T>() -> ChannelHandle<T> / {RawChannel<T>} {
+    channel(256)
+}
+
+// -----------------------------------------------------------------------------
+// Sender Operations
+// -----------------------------------------------------------------------------
+
+/// Send a value through the sender (blocking if channel is full).
+fn send<T>(sender: Sender<T>, value: T) / {RawChannel<T>} {
+    perform RawChannel.send(sender.channel.id, value);
+}
+
+/// Try to send without blocking. Returns true if successful.
+fn try_send<T>(sender: Sender<T>, value: T) -> bool / {RawChannel<T>} {
+    perform RawChannel.try_send(sender.channel.id, value)
+}
+
+/// Close the sender side, signaling no more values will be sent.
+fn close_sender<T>(sender: Sender<T>) / {RawChannel<T>} {
+    perform RawChannel.close(sender.channel.id);
+}
+
+// -----------------------------------------------------------------------------
+// Receiver Operations
+// -----------------------------------------------------------------------------
+
+/// Receive a value from the receiver (blocking if channel is empty).
+fn recv<T>(receiver: Receiver<T>) -> T / {RawChannel<T>} {
+    perform RawChannel.recv(receiver.channel.id)
+}
+
+/// Try to receive without blocking. Returns None if channel is empty.
+fn try_recv<T>(receiver: Receiver<T>) -> Option<T> / {RawChannel<T>} {
+    perform RawChannel.try_recv(receiver.channel.id)
+}
+
+// -----------------------------------------------------------------------------
+// Channel Handle Operations
+// -----------------------------------------------------------------------------
+
+/// Send on a channel handle (when not using split sender/receiver).
+fn channel_send<T>(handle: ChannelHandle<T>, value: T) / {RawChannel<T>} {
+    perform RawChannel.send(handle.id, value);
+}
+
+/// Receive from a channel handle.
+fn channel_recv<T>(handle: ChannelHandle<T>) -> T / {RawChannel<T>} {
+    perform RawChannel.recv(handle.id)
+}
+
+/// Try send on a channel handle.
+fn channel_try_send<T>(handle: ChannelHandle<T>, value: T) -> bool / {RawChannel<T>} {
+    perform RawChannel.try_send(handle.id, value)
+}
+
+/// Try receive from a channel handle.
+fn channel_try_recv<T>(handle: ChannelHandle<T>) -> Option<T> / {RawChannel<T>} {
+    perform RawChannel.try_recv(handle.id)
+}
+
+/// Close a channel handle.
+fn channel_close<T>(handle: ChannelHandle<T>) / {RawChannel<T>} {
+    perform RawChannel.close(handle.id);
+}
+
+// -----------------------------------------------------------------------------
+// Channel State Queries
+// -----------------------------------------------------------------------------
+
+/// Check if channel is at capacity.
+fn is_full<T>(handle: ChannelHandle<T>) -> bool {
+    // Would require runtime query in real implementation
+    false
+}
+
+/// Check if channel is empty.
+fn is_empty<T>(handle: ChannelHandle<T>) -> bool {
+    // Would require runtime query in real implementation
+    false
+}
+
+/// Get channel capacity.
+fn get_capacity<T>(handle: ChannelHandle<T>) -> i32 {
+    handle.capacity
+}
+
+// -----------------------------------------------------------------------------
+// Multi-Channel Select (Future Extension)
+// -----------------------------------------------------------------------------
+
+/// A selector for waiting on multiple channels.
+/// Note: This is a design preview. Full implementation requires
+/// runtime support for select/poll operations.
+struct ChannelSelector {
+    /// Number of channels being selected.
+    count: i32,
+    /// Channel IDs (up to 8 for now).
+    channels: [i32; 8],
+    /// Ready flags.
+    ready: [bool; 8],
+}
+
+/// Create a new selector.
+fn new_selector() -> ChannelSelector {
+    ChannelSelector {
+        count: 0,
+        channels: [0; 8],
+        ready: [false; 8],
+    }
+}
+
+/// Add a channel to the selector. Returns index for later identification.
+fn selector_add<T>(selector: ChannelSelector, handle: ChannelHandle<T>) -> i32 {
+    let idx: i32 = selector.count;
+    if idx < 8 {
+        // In real impl, would mutate selector
+        idx
+    } else {
+        -1  // Selector full
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Broadcast Channel
+// -----------------------------------------------------------------------------
+
+/// A broadcast channel that delivers each message to all receivers.
+/// Each receiver gets its own copy of every message.
+struct BroadcastChannel<T> {
+    /// Sender channel.
+    sender_id: i32,
+    /// Receiver channels (one per subscriber).
+    receiver_ids: [i32; 16],
+    /// Number of active receivers.
+    receiver_count: i32,
+    /// Buffer size per receiver.
+    buffer_size: i32,
+}
+
+/// Create a broadcast channel.
+fn broadcast<T>(buffer_size: i32) -> BroadcastChannel<T> / {RawChannel<T>} {
+    let sender_id: i32 = perform RawChannel.create(buffer_size);
+    BroadcastChannel {
+        sender_id: sender_id,
+        receiver_ids: [0; 16],
+        receiver_count: 0,
+        buffer_size: buffer_size,
+    }
+}
+
+/// Subscribe to a broadcast channel. Returns a receiver handle.
+fn subscribe<T>(bc: BroadcastChannel<T>) -> ChannelHandle<T> / {RawChannel<T>} {
+    let recv_id: i32 = perform RawChannel.create(bc.buffer_size);
+    // In real impl, would register with broadcaster
+    ChannelHandle {
+        id: recv_id,
+        capacity: bc.buffer_size,
+        closed: false,
+    }
+}
+
+/// Broadcast a value to all subscribers.
+fn broadcast_send<T>(bc: BroadcastChannel<T>, value: T) / {RawChannel<T>} {
+    // In real impl, would send to all receiver channels
+    let mut i: i32 = 0;
+    while i < bc.receiver_count {
+        perform RawChannel.send(bc.receiver_ids[i], value);
+        i = i + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Ring Buffer Channel
+// -----------------------------------------------------------------------------
+
+/// A ring buffer that overwrites oldest values when full.
+/// Useful when only recent values matter (e.g., sensor data).
+struct RingChannel<T> {
+    handle: ChannelHandle<T>,
+    capacity: i32,
+    /// Tracks if we've wrapped around.
+    wrapped: bool,
+}
+
+/// Create a ring buffer channel.
+fn ring_channel<T>(capacity: i32) -> RingChannel<T> / {RawChannel<T>} {
+    RingChannel {
+        handle: channel(capacity),
+        capacity: capacity,
+        wrapped: false,
+    }
+}
+
+/// Send to ring channel, overwriting oldest if full.
+fn ring_send<T>(ring: RingChannel<T>, value: T) / {RawChannel<T>} {
+    let sent: bool = channel_try_send(ring.handle, value);
+    if !sent {
+        // Channel full - drain oldest and retry
+        let _discarded: Option<T> = channel_try_recv(ring.handle);
+        channel_send(ring.handle, value);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Pipeline Channel Utilities
+// -----------------------------------------------------------------------------
+
+/// Connect a source stream to a channel, enabling async consumption.
+fn stream_to_channel<T>(
+    stream: fn() / {Emit<T>},
+    handle: ChannelHandle<T>
+) / {Emit<T>, RawChannel<T>} {
+    handle stream() {
+        Emit.emit(value) => {
+            channel_send(handle, value);
+            resume(());
+        }
+    };
+    channel_close(handle);
+}
+
+/// Create a stream from a channel.
+fn channel_to_stream<T>(handle: ChannelHandle<T>) / {Emit<T>, RawChannel<T>} {
+    loop {
+        let maybe: Option<T> = channel_try_recv(handle);
+        match maybe {
+            Option::Some(value) => {
+                perform Emit.emit(value);
+            },
+            Option::None => {
+                // Check if channel is closed
+                // For now, break on empty
+                break;
+            },
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Effect Type Alias
+// -----------------------------------------------------------------------------
+
+// The full channel effect for typed operations.
+// Users would declare: fn my_func() / {TypedChannel<MyType>}
+//
+// Note: Blood doesn't yet support effect aliases, so this is documentation:
+//
+// effect TypedChannel<T> = RawChannel<T>;
+//
+// This would allow:
+//   fn producer() / {TypedChannel<SensorReading>} { ... }
+//   fn consumer() / {TypedChannel<SensorReading>} { ... }
+
+// -----------------------------------------------------------------------------
+// Option Type (for completeness)
+// -----------------------------------------------------------------------------
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}

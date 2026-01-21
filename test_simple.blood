@@ -1,0 +1,30 @@
+// Minimal test: No closures with captures
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn range(start: i32, end: i32) / {Emit<i32>} {
+    let mut i: i32 = start;
+    while i < end {
+        perform Emit.emit(i);
+        i = i + 1;
+    }
+}
+
+fn sum(stream: fn() / {Emit<i32>}) -> i64 {
+    let mut total: i64 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            total = total + (value as i64);
+            resume(());
+        }
+    };
+    total
+}
+
+// Simple test with literal values (no captures)
+fn main() {
+    let s1: i64 = sum(|| / {Emit<i32>} { range(1, 11); });
+}

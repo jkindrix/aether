@@ -1,0 +1,21 @@
+// Test: predicate function call
+
+fn apply_pred(x: i32, pred: fn(i32) -> bool) -> bool {
+    pred(x)
+}
+
+fn is_even(x: i32) -> bool {
+    x % 2 == 0
+}
+
+fn main() -> i32 {
+    // Test predicate directly
+    if !is_even(2) { return 1; }   // 2 is even
+    if is_even(3) { return 2; }    // 3 is odd
+
+    // Test predicate through function
+    if !apply_pred(4, is_even) { return 3; }  // 4 is even
+    if apply_pred(5, is_even) { return 4; }   // 5 is odd
+
+    0  // All pass
+}

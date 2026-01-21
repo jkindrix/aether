@@ -1,0 +1,26 @@
+// Test inline handler WITH capturing outer variables
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn emit_numbers() / {Emit<i32>} {
+    perform Emit.emit(10);
+    perform Emit.emit(20);
+    perform Emit.emit(30);
+}
+
+fn main() -> i32 {
+    let mut total: i32 = 0;
+
+    try {
+        emit_numbers();
+    } with {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+
+    total  // Should be 60
+}

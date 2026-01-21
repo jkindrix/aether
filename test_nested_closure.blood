@@ -1,0 +1,45 @@
+// Test nested closures with effects
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn emit_123() / {Emit<i32>} {
+    perform Emit.emit(1);
+    perform Emit.emit(2);
+    perform Emit.emit(3);
+}
+
+fn square(x: i32) -> i32 {
+    x * x
+}
+
+fn map_stream(stream: fn() / {Emit<i32>}, f: fn(i32) -> i32) / {Emit<i32>} {
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            perform Emit.emit(f(value));
+            resume(());
+        }
+    };
+}
+
+fn sum_stream(stream: fn() / {Emit<i32>}) -> i32 {
+    let mut total: i32 = 0;
+    try { stream(); }
+    with {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+    total
+}
+
+fn main() -> i32 {
+    // Nested closures: outer wraps map, inner wraps emit
+    sum_stream(|| / {Emit<i32>} {
+        map_stream(|| / {Emit<i32>} { emit_123(); }, square);
+    })
+    // Should be 1 + 4 + 9 = 14
+}

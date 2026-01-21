@@ -1,0 +1,19 @@
+// Test generic function with two function parameters (no effects)
+
+fn filter_list<T>(check: fn() -> T, pred: fn(T) -> bool) -> bool {
+    pred(check())
+}
+
+fn get_value() -> i32 {
+    42
+}
+
+fn is_even(x: i32) -> bool {
+    x % 2 == 0
+}
+
+fn main() -> i32 {
+    let result: bool = filter_list(get_value, is_even);
+    if result { return 0; }
+    return 1;
+}

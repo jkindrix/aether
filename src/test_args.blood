@@ -1,0 +1,15 @@
+// Test: what argument does called function see?
+
+fn call_it(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn identity(x: i32) -> i32 {
+    x  // Just return what we receive
+}
+
+fn main() -> i32 {
+    // What does identity see when called through call_it?
+    let result: i32 = call_it(identity, 42);
+    result  // Return it as exit code
+}

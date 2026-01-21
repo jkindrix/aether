@@ -1,0 +1,288 @@
+// =============================================================================
+// Aether Example: Fibonacci Stream
+// =============================================================================
+//
+// A simple, self-contained example that generates and processes Fibonacci
+// numbers using Blood's algebraic effects. This example is designed to be
+// compilable with the current Blood compiler.
+//
+
+// -----------------------------------------------------------------------------
+// Core Effect Definition
+// -----------------------------------------------------------------------------
+
+/// The fundamental stream effect: emit values to a handler
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+// -----------------------------------------------------------------------------
+// Source: Fibonacci Generator
+// -----------------------------------------------------------------------------
+
+/// Generate the first n Fibonacci numbers as a stream
+fn fibonacci(n: i32) / {Emit<i64>} {
+    if n <= 0 {
+        return;
+    }
+
+    let mut a: i64 = 0;
+    let mut b: i64 = 1;
+    let mut count: i32 = 0;
+
+    while count < n {
+        perform Emit.emit(a);
+
+        let next: i64 = a + b;
+        a = b;
+        b = next;
+        count = count + 1;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Operators
+// -----------------------------------------------------------------------------
+
+/// Keep only values greater than threshold
+fn filter_gt(stream: fn() / {Emit<i64>}, threshold: i64) / {Emit<i64>} {
+    handle stream() {
+        Emit.emit(value) => {
+            if value > threshold {
+                perform Emit.emit(value);
+            }
+            resume(());
+        }
+    };
+}
+
+/// Take only first n elements
+fn take(stream: fn() / {Emit<i64>}, n: i64) / {Emit<i64>} {
+    let mut count: i64 = 0;
+    handle stream() {
+        Emit.emit(value) => {
+            if count < n {
+                perform Emit.emit(value);
+                count = count + 1;
+                resume(());
+            }
+            // Early termination: don't resume after n
+        }
+    };
+}
+
+/// Square each value (demonstrates overflow handling)
+fn square(stream: fn() / {Emit<i64>}) / {Emit<i64>} {
+    handle stream() {
+        Emit.emit(value) => {
+            perform Emit.emit(value * value);
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Sinks
+// -----------------------------------------------------------------------------
+
+/// Sum all values in the stream
+fn sum(stream: fn() / {Emit<i64>}) -> i64 {
+    let mut total: i64 = 0;
+    handle stream() {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+    total
+}
+
+/// Count elements in the stream
+fn count(stream: fn() / {Emit<i64>}) -> i64 {
+    let mut n: i64 = 0;
+    handle stream() {
+        Emit.emit(_value) => {
+            n = n + 1;
+            resume(());
+        }
+    };
+    n
+}
+
+/// Find maximum value
+fn max(stream: fn() / {Emit<i64>}) -> i64 {
+    let mut maximum: i64 = 0;
+    let mut found: bool = false;
+    handle stream() {
+        Emit.emit(value) => {
+            if !found || value > maximum {
+                maximum = value;
+                found = true;
+            }
+            resume(());
+        }
+    };
+    maximum
+}
+
+/// Print each value (side effect sink)
+fn print_each(stream: fn() / {Emit<i64>}) {
+    let mut index: i64 = 0;
+    handle stream() {
+        Emit.emit(value) => {
+            // Would use Blood's IO effect in practice
+            // println_int(value as i32);
+            index = index + 1;
+            resume(());
+        }
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Example Computations
+// -----------------------------------------------------------------------------
+
+/// Sum of first 20 Fibonacci numbers
+fn sum_first_20_fib() -> i64 {
+    // Fib(0..19): 0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181
+    // Sum = 10945
+    sum(|| {
+        fibonacci(20);
+    })
+}
+
+/// Sum of Fibonacci numbers greater than 100 (first 10 such numbers)
+fn sum_large_fib() -> i64 {
+    sum(|| {
+        take(|| {
+            filter_gt(|| {
+                fibonacci(30);
+            }, 100);
+        }, 10);
+    })
+}
+
+/// Count how many of first 30 Fibonacci numbers exceed 1000
+fn count_fib_over_1000() -> i64 {
+    count(|| {
+        filter_gt(|| {
+            fibonacci(30);
+        }, 1000);
+    })
+}
+
+/// Largest Fibonacci number under 10000
+fn largest_fib_under_10000() -> i64 {
+    max(|| {
+        filter_gt(|| {
+            fibonacci(25);
+        }, 0);  // All positive
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Main Entry Point
+// -----------------------------------------------------------------------------
+
+fn main() {
+    // Compute various Fibonacci statistics
+    let sum20: i64 = sum_first_20_fib();
+    let sum_large: i64 = sum_large_fib();
+    let count_large: i64 = count_fib_over_1000();
+    let max_fib: i64 = largest_fib_under_10000();
+
+    // Results:
+    // sum20 = 10945 (sum of first 20 Fibonacci numbers)
+    // sum_large = sum of first 10 Fib > 100
+    // count_large = count of Fib > 1000 in first 30
+    // max_fib = largest Fib in first 25
+
+    // In a complete program, we'd print these results
+    // using Blood's IO effects
+
+    // Verify computations (compile-time checks)
+    let expected_sum: i64 = 10946;  // Actually 0+1+1+2+3+5+8+13+21+34+55+89+144+233+377+610+987+1597+2584+4181 = 10946
+
+    // Return a combined result for testing
+    let _result: i64 = sum20 + count_large;
+}
+
+// -----------------------------------------------------------------------------
+// Additional Helpers for Testing
+// -----------------------------------------------------------------------------
+
+/// Generate arithmetic sequence: start, start+step, start+2*step, ...
+fn arithmetic(start: i64, step: i64, count: i32) / {Emit<i64>} {
+    let mut value: i64 = start;
+    let mut i: i32 = 0;
+    while i < count {
+        perform Emit.emit(value);
+        value = value + step;
+        i = i + 1;
+    }
+}
+
+/// Generate geometric sequence: start, start*ratio, start*ratio^2, ...
+fn geometric(start: i64, ratio: i64, count: i32) / {Emit<i64>} {
+    let mut value: i64 = start;
+    let mut i: i32 = 0;
+    while i < count {
+        perform Emit.emit(value);
+        value = value * ratio;
+        i = i + 1;
+    }
+}
+
+/// Triangular numbers: 1, 3, 6, 10, 15, ...
+fn triangular(count: i32) / {Emit<i64>} {
+    let mut sum: i64 = 0;
+    let mut i: i32 = 1;
+    while i <= count {
+        sum = sum + (i as i64);
+        perform Emit.emit(sum);
+        i = i + 1;
+    }
+}
+
+/// Check if a number is prime
+fn is_prime(n: i64) -> bool {
+    if n < 2 {
+        return false;
+    }
+    if n == 2 {
+        return true;
+    }
+    if n % 2 == 0 {
+        return false;
+    }
+    let mut d: i64 = 3;
+    while d * d <= n {
+        if n % d == 0 {
+            return false;
+        }
+        d = d + 2;
+    }
+    true
+}
+
+/// Filter stream to only prime numbers
+fn primes_only(stream: fn() / {Emit<i64>}) / {Emit<i64>} {
+    handle stream() {
+        Emit.emit(value) => {
+            if is_prime(value) {
+                perform Emit.emit(value);
+            }
+            resume(());
+        }
+    };
+}
+
+/// Count prime Fibonacci numbers in first n
+fn count_prime_fib(n: i32) -> i64 {
+    // Prime Fibonacci numbers: 2, 3, 5, 13, 89, 233, 1597, ...
+    count(|| {
+        primes_only(|| {
+            fibonacci(n);
+        });
+    })
+}

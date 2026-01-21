@@ -1,0 +1,15 @@
+// Test predicate alone
+
+fn is_even(x: i32) -> bool {
+    x % 2 == 0
+}
+
+fn main() -> i32 {
+    // Test predicate directly
+    if !is_even(2) { return 1; }
+    if is_even(3) { return 2; }
+    if !is_even(4) { return 3; }
+    if is_even(5) { return 4; }
+
+    0
+}

@@ -1,0 +1,37 @@
+// Test map without closures - use named functions
+
+effect Emit<T> {
+    op emit(value: T) -> ();
+}
+
+fn emit_123() / {Emit<i32>} {
+    perform Emit.emit(1);
+    perform Emit.emit(2);
+    perform Emit.emit(3);
+}
+
+fn square(x: i32) -> i32 {
+    x * x
+}
+
+fn map_square() / {Emit<i32>} {
+    try { emit_123(); }
+    with {
+        Emit.emit(value) => {
+            perform Emit.emit(square(value));
+            resume(());
+        }
+    };
+}
+
+fn main() -> i32 {
+    let mut total: i32 = 0;
+    try { map_square(); }
+    with {
+        Emit.emit(value) => {
+            total = total + value;
+            resume(());
+        }
+    };
+    total  // Should be 1 + 4 + 9 = 14
+}

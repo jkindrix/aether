@@ -1,0 +1,16 @@
+// Test: generic function where T only appears in params (no effects)
+
+fn count_fn<T>(f: fn() -> T) -> i64 {
+    f();  // Call it once
+    1i64
+}
+
+fn get_int() -> i32 {
+    42
+}
+
+fn main() -> i32 {
+    let result: i64 = count_fn(get_int);
+    if result == 1 { return 0; }
+    (result as i32)
+}
