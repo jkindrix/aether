@@ -311,8 +311,8 @@ fn stream_to_channel<T>(
 }
 
 // NOTE: channel_to_stream is commented out due to Blood compiler limitation
-// with type inference for generic types through Option pattern matching.
-// The type T in Option::Some(value) doesn't properly unify with Emit<T>.
+// with type parameter unification between Option<T> pattern and Emit<T> effect.
+// The T from Option::Some(value) doesn't properly unify with Emit<T>'s type parameter.
 //
 // /// Create a stream from a channel.
 // fn channel_to_stream<T>(handle: ChannelHandle<T>) / {Emit<T>, RawChannel<T>} {

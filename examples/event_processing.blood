@@ -99,7 +99,7 @@ fn market_event_source(
     events_per_symbol: i32
 ) / {Emit<MarketEvent>} {
     // Generate events with realistic patterns
-    let mut base_prices: [i64; 8] = [10000, 15000, 5000, 20000, 8000, 12000, 3000, 25000];
+    let mut base_prices: [i64; 8] = [10000i64, 15000i64, 5000i64, 20000i64, 8000i64, 12000i64, 3000i64, 25000i64];
 
     let mut symbol: i32 = 0;
     while symbol < num_symbols && symbol < 8 {
@@ -204,13 +204,13 @@ fn compute_metrics(
     stream: fn() / {Emit<MarketEvent>}
 ) / {Emit<SymbolMetrics>} {
     // State for up to 8 symbols
-    let mut last_prices: [i64; 8] = [0; 8];
-    let mut high_prices: [i64; 8] = [0; 8];
-    let mut low_prices: [i64; 8] = [9223372036854775807; 8];  // i64::MAX
-    let mut volumes: [i64; 8] = [0; 8];
+    let mut last_prices: [i64; 8] = [0i64; 8];
+    let mut high_prices: [i64; 8] = [0i64; 8];
+    let mut low_prices: [i64; 8] = [9223372036854775807i64; 8];  // i64::MAX
+    let mut volumes: [i64; 8] = [0i64; 8];
     let mut trade_counts: [i32; 8] = [0; 8];
-    let mut price_sums: [i64; 8] = [0; 8];
-    let mut prev_prices: [i64; 8] = [0; 8];
+    let mut price_sums: [i64; 8] = [0i64; 8];
+    let mut prev_prices: [i64; 8] = [0i64; 8];
 
     try { stream(); }
     with {
@@ -244,7 +244,11 @@ fn compute_metrics(
                 };
 
                 // Compute volatility (simplified: range as % of average)
-                let avg: i64 = price_sums[idx] / (trade_counts[idx] as i64);
+                let avg: i64 = if trade_counts[idx] > 0 {
+                    price_sums[idx] / (trade_counts[idx] as i64)
+                } else {
+                    0
+                };
                 let range: i64 = high_prices[idx] - low_prices[idx];
                 let volatility: i32 = if avg > 0 {
                     ((range * 100) / avg) as i32

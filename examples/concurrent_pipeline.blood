@@ -186,8 +186,8 @@ fn aggregate_by_sensor(
     stream: fn() / {Emit<ProcessedReading>}
 ) / {Emit<SensorStats>} {
     // Simple aggregation for up to 16 sensors
-    let mut counts: [i64; 16] = [0; 16];
-    let mut sums: [i64; 16] = [0; 16];
+    let mut counts: [i64; 16] = [0i64; 16];
+    let mut sums: [i64; 16] = [0i64; 16];
     let mut mins: [i32; 16] = [2147483647; 16];
     let mut maxs: [i32; 16] = [-2147483648; 16];
 
@@ -278,10 +278,10 @@ fn run_sensor_pipeline_sequential() -> PipelineSummary {
     //   -> aggregate_by_sensor
     //   -> collect_summary
 
-    collect_summary(|| {
-        aggregate_by_sensor(|| {
-            filter_alerts(|| {
-                normalize_stream(|| {
+    collect_summary(|| / {Emit<SensorStats>} {
+        aggregate_by_sensor(|| / {Emit<ProcessedReading>} {
+            filter_alerts(|| / {Emit<ProcessedReading>} {
+                normalize_stream(|| / {Emit<SensorReading>} {
                     sensor_source(4, 100);
                 });
             });
@@ -291,9 +291,9 @@ fn run_sensor_pipeline_sequential() -> PipelineSummary {
 
 /// Run the complete processing pipeline (all readings, no filter)
 fn run_full_pipeline() -> PipelineSummary {
-    collect_summary(|| {
-        aggregate_by_sensor(|| {
-            normalize_stream(|| {
+    collect_summary(|| / {Emit<SensorStats>} {
+        aggregate_by_sensor(|| / {Emit<ProcessedReading>} {
+            normalize_stream(|| / {Emit<SensorReading>} {
                 sensor_source(4, 100);
             });
         });
