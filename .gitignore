@@ -1,0 +1,20 @@
+# Compiled binaries
+examples/basic_streams
+examples/concurrent_pipeline
+examples/event_processing
+examples/fibonacci_stream
+src/streams
+
+# Build artifacts
+*.blood_objs/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
