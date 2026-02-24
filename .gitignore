@@ -4,6 +4,8 @@ examples/concurrent_pipeline
 examples/event_processing
 examples/fibonacci_stream
 src/streams
+src/test_*
+!src/test_*.blood
 
 # Build artifacts
 *.blood_objs/
